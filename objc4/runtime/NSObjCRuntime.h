@@ -6,9 +6,10 @@
 #define _OBJC_NSOBJCRUNTIME_H_
 
 #include <TargetConditionals.h>
+#include <limits.h>
 #include <objc/objc.h>
 
-#if __LP64__ || TARGET_OS_WIN32 || NS_BUILD_32_LIKE_64
+#if __LP64__ || NS_BUILD_32_LIKE_64
 typedef long NSInteger;
 typedef unsigned long NSUInteger;
 #else

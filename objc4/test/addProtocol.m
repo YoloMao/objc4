@@ -1,12 +1,5 @@
 /*
-TEST_CFLAGS -framework Foundation
-TEST_BUILD_OUTPUT
-.*addProtocol.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-.*addProtocol.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-.*addProtocol.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-.*addProtocol.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-.*addProtocol.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-END
+TEST_CFLAGS -Wno-nonnull
 TEST_RUN_OUTPUT
 objc\[\d+\]: protocol_addProtocol: added protocol 'EmptyProto' is still under construction!
 objc\[\d+\]: objc_registerProtocol: protocol 'Proto1' was already registered!
@@ -16,13 +9,12 @@ objc\[\d+\]: objc_registerProtocol: protocol 'SuperProto' was already registered
 objc\[\d+\]: protocol_addProtocol: modified protocol 'SuperProto' is not under construction!
 objc\[\d+\]: protocol_addMethodDescription: protocol 'SuperProto' is not under construction!
 OK: addProtocol.m
-END 
+END
 */
 
 #include "test.h"
 
 #include <objc/runtime.h>
-#include <Foundation/Foundation.h>
 
 @protocol SuperProto @end
 @protocol SuperProto2 @end
@@ -76,6 +68,16 @@ int main()
     protocol_addProtocol(proto, proto2);  // succeeds
 
     char *types = strdup("@:");
+
+    // Force reverse order for these selectors (so we can check sorting works)
+    SEL instSelectors[] = {
+        @selector(ReqInst3),
+        @selector(ReqInst2),
+        @selector(ReqInst1),
+        @selector(ReqInst0)
+    };
+    (void)&instSelectors;
+
     protocol_addMethodDescription(proto, @selector(ReqInst0), types, YES, YES);
     protocol_addMethodDescription(proto, @selector(ReqInst1), types, YES, YES);
     protocol_addMethodDescription(proto, @selector(ReqInst2), types, YES, YES);
@@ -123,7 +125,7 @@ int main()
     // Use of added protocols
 
     testassert(proto == objc_getProtocol("Proto1"));
-    strcpy(name, "XXXXXX");  // name is copied
+    strncpy(name, "XXXXXX", 7);  // name is copied
     testassert(0 == strcmp(protocol_getName(proto), "Proto1"));
 
     protolist = protocol_copyProtocolList(proto, &count);
@@ -139,7 +141,7 @@ int main()
     testassert(protocol_conformsToProtocol(proto, @protocol(SuperProto)));
     testassert(!protocol_conformsToProtocol(proto, @protocol(UnrelatedProto)));
 
-    strcpy(types, "XX");  // types is copied
+    strncpy(types, "XX", 3);  // types is copied
     desclist = protocol_copyMethodDescriptionList(proto, YES, YES, &count);
     testassert(desclist  &&  count == 4);
     testprintf("%p %p\n", desclist[0].name, @selector(ReqInst0));
@@ -162,17 +164,23 @@ int main()
     testassert(0 == strcmp(desclist[3].types, "@:"));
     free(desclist);
 
-    strcpy(name0, "XXXXXXXX");  // name is copied
-    strcpy(name1, "XXXXXXXX");  // name is copied
-    strcpy(name2, "XXXXXXXX");  // name is copied
-    strcpy(name3, "XXXXXXXX");  // name is copied
-    strcpy(name4, "XXXXXXXXX");  // name is copied
-    strcpy(name5, "XXXXXXXXX");  // name is copied
-    strcpy(name6, "XXXXXXXXX");  // name is copied
-    strcpy(name7, "XXXXXXXXX");  // name is copied
-    strcpy(attrname, "X");             // description is copied
-    strcpy(attrvalue, "X");            // description is copied
+    strncpy(name0, "XXXXXXXX", 9);  // name is copied
+    strncpy(name1, "XXXXXXXX", 9);  // name is copied
+    strncpy(name2, "XXXXXXXX", 9);  // name is copied
+    strncpy(name3, "XXXXXXXX", 9);  // name is copied
+    strncpy(name4, "XXXXXXXXX", 10);  // name is copied
+    strncpy(name5, "XXXXXXXXX", 10);  // name is copied
+    strncpy(name6, "XXXXXXXXX", 10);  // name is copied
+    strncpy(name7, "XXXXXXXXX", 10);  // name is copied
+    strncpy(attrname, "X", 2);             // description is copied
+    strncpy(attrvalue, "X", 2);            // description is copied
     memset(attrs, 'X', sizeof(attrs)); // description is copied
+
+    // Check instance methods (verifies that the list was sorted)
+    testassert(protocol_getMethodDescription(proto, @selector(ReqInst0), YES, YES).name == @selector(ReqInst0));
+    testassert(protocol_getMethodDescription(proto, @selector(ReqInst1), YES, YES).name == @selector(ReqInst1));
+    testassert(protocol_getMethodDescription(proto, @selector(ReqInst2), YES, YES).name == @selector(ReqInst2));
+    testassert(protocol_getMethodDescription(proto, @selector(ReqInst3), YES, YES).name == @selector(ReqInst3));
 
     // instance properties
     count = 100;
@@ -205,7 +213,6 @@ int main()
     testassert(0 == strcmp(property_getAttributes(proplist[2]), "Ti"));
     testassert(0 == strcmp(property_getAttributes(proplist[3]), "Ti"));
     free(proplist);
-
 
     testassert(proto2 == objc_getProtocol("EmptyProto"));
     testassert(0 == strcmp(protocol_getName(proto2), "EmptyProto"));

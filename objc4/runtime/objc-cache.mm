@@ -79,13 +79,13 @@
  ***********************************************************************/
 
 
-#if __OBJC2__
-
 #include "objc-private.h"
 
 #if TARGET_OS_OSX
+#   if !TARGET_OS_EXCLAVEKIT
 //#include <Cambria/Traps.h>
 //#include <Cambria/Cambria.h>
+#   endif
 #endif
 
 #if __arm__  ||  __x86_64__  ||  __i386__
@@ -234,7 +234,9 @@ asm("\n .section __TEXT,__const"
 
 #if CONFIG_USE_PREOPT_CACHES
 __attribute__((used, section("__DATA_CONST,__objc_scoffs")))
-uintptr_t objc_opt_offsets[__OBJC_OPT_OFFSETS_COUNT];
+const int objc_opt_preopt_caches_version = 4;
+__attribute__((used, section("__DATA_CONST,__objc_scoffs")))
+const uintptr_t objc_opt_offsets[__OBJC_OPT_OFFSETS_COUNT] = {0};
 #endif
 
 #if CACHE_END_MARKER
@@ -362,7 +364,7 @@ void bucket_t::set(bucket_t *base, SEL newSel, IMP newImp, Class cls)
 #elif __x86_64__ || __i386__
             _sel.store(newSel, memory_order_release);
 #else
-#error Don't know how to do bucket_t::set on this architecture.
+#error Do not know how to do bucket_t::set on this architecture.
 #endif
         }
     } else {
@@ -380,6 +382,12 @@ void cache_t::initializeToEmpty()
 }
 
 #if CONFIG_USE_PREOPT_CACHES
+
+static uint32_t disguisedPreoptCacheSignature(const bucket_t *disguised, const cache_t *cache) {
+    uintptr_t signature = ptrauth_sign_generic_data(disguised, cache);
+    return (uint32_t)signature ^ (uint32_t)(signature >> 32);
+}
+
 /*
  * The shared cache builder will sometimes have prebuilt an IMP cache
  * for the class and left a `preopt_cache_t` pointer in _originalPreoptCache.
@@ -414,9 +422,11 @@ void cache_t::initializeToPreoptCacheInDisguise(const preopt_cache_t *cache)
 
     uintptr_t value = (uintptr_t)cache + sizeof(preopt_cache_t) -
             (bucket_t::offsetOfSel() + sizeof(SEL));
+    bucket_t *disguised = (bucket_t *)value;
 
     _originalPreoptCache.store(nullptr, std::memory_order_relaxed);
-    setBucketsAndMask((bucket_t *)value, 0);
+    setBucketsAndMask(disguised, 0);
+    _disguisedPreoptCacheSignature = disguisedPreoptCacheSignature(disguised, this);
     _occupied = cache->occupied;
 }
 
@@ -452,18 +462,48 @@ void cache_t::initializeToEmptyOrPreoptimizedInDisguise()
 {
     if (os_fastpath(!DisablePreoptCaches)) {
         if (!objc::dataSegmentsRanges.inSharedCache((uintptr_t)this)) {
-            if (dyld_shared_cache_some_image_overridden()) {
-                // If the system has roots, then we must disable preoptimized
-                // caches completely. If a class in another image has a
-                // superclass in the root, the offset to the superclass will
-                // be wrong. rdar://problem/61601961
-                cls()->setDisallowPreoptCachesRecursively("roots");
-            }
             return initializeToEmpty();
         }
 
         auto cache = _originalPreoptCache.load(memory_order_relaxed);
         if (cache) {
+            // When roots are installed, then the class's preoptimized cache
+            // might not be valid. This is the case if the fallback class is
+            // in a root, or if any class between this class and the fallback
+            // is in a root. Note, this class cannot itself be in a root,
+            // because a class in a root can't have a preoptimized cache in the
+            // first place.
+            //
+            // "In a root" needs to include inside-out patched classes which are
+            // physically in the shared cache but conceptually in a root.
+            // objc::classInSharedCache knows how to check for that.
+            if (dyld_shared_cache_some_image_overridden()) {
+                // If there's a fallback class, then we need to check it and the
+                // intermediate classes. If not, then the preoptimized cache is
+                // good.
+                if (cache->fallback_class_offset) {
+                    Class fallback = (Class)((intptr_t)cls() + cache->fallback_class_offset);
+
+                    // Iterate through the superclasses until we find `fallback`
+                    // or we go off the end. We'll go off the end if the
+                    // fallback class is in a root and is not inside-out
+                    // patched, because `fallback` will point to the original.
+                    Class intermediate = cls();
+                    do {
+                        intermediate = intermediate->getSuperclass();
+
+                        // If we never found `fallback`, or we found a class
+                        // not in the shared cache, then this preoptimized cache
+                        // is no good.
+                        if (!intermediate || !objc::classInSharedCache(intermediate)) {
+                            initializeToEmpty();
+                            cls()->setDisallowPreoptCachesRecursively("roots");
+                            return;
+                        }
+                    } while (intermediate != fallback);
+                }
+            }
+
             return initializeToPreoptCacheInDisguise(cache);
         }
     }
@@ -471,18 +511,18 @@ void cache_t::initializeToEmptyOrPreoptimizedInDisguise()
     return initializeToEmpty();
 }
 
-const preopt_cache_t *cache_t::preopt_cache() const
+const preopt_cache_t *cache_t::preopt_cache(MAYBE_UNUSED_AUTHENTICATED_PARAM bool authenticated) const
 {
     auto addr = _bucketsAndMaybeMask.load(memory_order_relaxed);
     addr &= preoptBucketsMask;
 #if __has_feature(ptrauth_calls)
-#if __BUILDING_OBJCDT__
-    addr = (uintptr_t)ptrauth_strip((preopt_cache_entry_t *)addr,
-            ptrauth_key_process_dependent_data);
-#else
-    addr = (uintptr_t)ptrauth_auth_data((preopt_cache_entry_t *)addr,
-            ptrauth_key_process_dependent_data, (uintptr_t)cls());
-#endif
+    if (authenticated)
+        addr = (uintptr_t)ptrauth_auth_data((preopt_cache_entry_t *)addr,
+                                            ptrauth_key_process_dependent_data,
+                                            (uintptr_t)cls());
+    else
+        addr = (uintptr_t)ptrauth_strip((preopt_cache_entry_t *)addr,
+                                        ptrauth_key_process_dependent_data);
 #endif
     return (preopt_cache_t *)(addr - sizeof(preopt_cache_t));
 }
@@ -491,6 +531,10 @@ const preopt_cache_t *cache_t::disguised_preopt_cache() const
 {
     bucket_t *b = buckets();
     if ((intptr_t)b->sel() >= 0) return nil;
+
+    uint32_t signature = disguisedPreoptCacheSignature(b, this);
+    if (slowpath(_disguisedPreoptCacheSignature != signature))
+        __builtin_trap();
 
     uintptr_t value = (uintptr_t)b + bucket_t::offsetOfSel() + sizeof(SEL);
     return (preopt_cache_t *)(value - sizeof(preopt_cache_t));
@@ -520,12 +564,12 @@ bool cache_t::shouldFlush(SEL sel, IMP imp) const
     if (!isConstantOptimizedCache(/*strict*/true)) {
         const preopt_cache_t *cache = disguised_preopt_cache();
         if (cache) {
-            uintptr_t offs = (uintptr_t)sel - (uintptr_t)@selector(🤯);
+            uintptr_t offs = (uintptr_t)sel - (uintptr_t)sharedCacheRelativeMethodBase();
             uintptr_t slot = ((offs >> cache->shift) & cache->mask);
             auto &entry = cache->entries[slot];
 
             return entry.sel_offs == offs &&
-                (uintptr_t)cls() - entry.imp_offs ==
+                ((uintptr_t)cls() - entry.imp_offset()) ==
                 (uintptr_t)ptrauth_strip(imp, ptrauth_key_function_pointer);
         }
     }
@@ -559,23 +603,23 @@ void cache_t::setBucketsAndMask(struct bucket_t *newBuckets, mask_t newMask)
     // ensure other threads see new buckets before new mask
     mega_barrier();
 
-    _maybeMask.store(newMask, memory_order_relaxed);
+    _mask.store(newMask, memory_order_relaxed);
     _occupied = 0;
 #elif __x86_64__ || i386
     // ensure other threads see buckets contents before buckets pointer
     _bucketsAndMaybeMask.store((uintptr_t)newBuckets, memory_order_release);
 
     // ensure other threads see new buckets before new mask
-    _maybeMask.store(newMask, memory_order_release);
+    _mask.store(newMask, memory_order_release);
     _occupied = 0;
 #else
-#error Don't know how to do setBucketsAndMask on this architecture.
+#error Do not know how to do setBucketsAndMask on this architecture.
 #endif
 }
 
 mask_t cache_t::mask() const
 {
-    return _maybeMask.load(memory_order_relaxed);
+    return _mask.load(memory_order_relaxed);
 }
 
 #elif CACHE_MASK_STORAGE == CACHE_MASK_STORAGE_HIGH_16 || CACHE_MASK_STORAGE == CACHE_MASK_STORAGE_HIGH_16_BIG_ADDRS
@@ -588,7 +632,7 @@ void cache_t::setBucketsAndMask(struct bucket_t *newBuckets, mask_t newMask)
     ASSERT(buckets <= bucketsMask);
     ASSERT(mask <= maxMask);
 
-    _bucketsAndMaybeMask.store(((uintptr_t)newMask << maskShift) | (uintptr_t)newBuckets, memory_order_relaxed);
+    _bucketsAndMaybeMask.store(((uintptr_t)newMask << maskShift) | (uintptr_t)newBuckets, memory_order_release);
     _occupied = 0;
 }
 
@@ -657,6 +701,11 @@ size_t cache_t::bytesForCapacity(uint32_t cap)
     return sizeof(bucket_t) * cap;
 }
 
+bucket_t *cache_t::mallocBuckets(mask_t newCapacity)
+{
+    return (bucket_t *)_calloc_canonical(bytesForCapacity(newCapacity));
+}
+
 #if CACHE_END_MARKER
 
 bucket_t *cache_t::endMarker(struct bucket_t *b, uint32_t cap)
@@ -668,7 +717,7 @@ bucket_t *cache_t::allocateBuckets(mask_t newCapacity)
 {
     // Allocate one extra bucket to mark the end of the list.
     // This can't overflow mask_t because newCapacity is a power of 2.
-    bucket_t *newBuckets = (bucket_t *)calloc(bytesForCapacity(newCapacity), 1);
+    bucket_t *newBuckets = mallocBuckets(newCapacity);
 
     bucket_t *end = endMarker(newBuckets, newCapacity);
 
@@ -692,7 +741,7 @@ bucket_t *cache_t::allocateBuckets(mask_t newCapacity)
 {
     if (PrintCaches) recordNewCache(newCapacity);
 
-    return (bucket_t *)calloc(bytesForCapacity(newCapacity), 1);
+    return mallocBuckets(newCapacity);
 }
 
 #endif
@@ -705,9 +754,9 @@ struct bucket_t *cache_t::emptyBuckets()
 bucket_t *cache_t::emptyBucketsForCapacity(mask_t capacity, bool allocate)
 {
 #if CONFIG_USE_CACHE_LOCK
-    cacheUpdateLock.assertLocked();
+    lockdebug::assert_locked(&cacheUpdateLock);
 #else
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 #endif
 
     size_t bytes = bytesForCapacity(capacity);
@@ -727,7 +776,7 @@ bucket_t *cache_t::emptyBucketsForCapacity(mask_t capacity, bool allocate)
         if (!allocate) return nil;
 
         mask_t newListCount = index + 1;
-        bucket_t *newBuckets = (bucket_t *)calloc(bytes, 1);
+        bucket_t *newBuckets = mallocBuckets(capacity);
         emptyBucketsList = (bucket_t**)
             realloc(emptyBucketsList, newListCount * sizeof(bucket_t *));
         // Share newBuckets for every un-allocated size smaller than index.
@@ -792,7 +841,7 @@ void cache_t::bad_cache(id receiver, SEL sel)
          "mask 0x%x, occupied 0x%x", 
          receiver ? "receiver" : "unused", receiver, 
          sel, cls(), this, b,
-         _maybeMask.load(memory_order_relaxed),
+         _mask.load(memory_order_relaxed),
          _occupied);
     _objc_inform_now_and_on_crash
         ("%s %zu bytes, buckets %zu bytes", 
@@ -825,7 +874,7 @@ void cache_t::bad_cache(id receiver, SEL sel)
 
 void cache_t::insert(SEL sel, IMP imp, id receiver)
 {
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 
     // Never cache before +initialize is done
     if (slowpath(!cls()->isInitialized())) {
@@ -897,9 +946,9 @@ void cache_t::insert(SEL sel, IMP imp, id receiver)
 void cache_t::copyCacheNolock(objc_imp_cache_entry *buffer, int len)
 {
 #if CONFIG_USE_CACHE_LOCK
-    cacheUpdateLock.assertLocked();
+    lockdebug::assert_locked(&cacheUpdateLock);
 #else
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 #endif
     int wpos = 0;
 
@@ -914,7 +963,7 @@ void cache_t::copyCacheNolock(objc_imp_cache_entry *buffer, int len)
             auto &ent = cache->entries[index];
             if (~ent.sel_offs) {
                 buffer[wpos].sel = (SEL)(sel_base + ent.sel_offs);
-                buffer[wpos].imp = (IMP)(imp_base - ent.imp_offs);
+                buffer[wpos].imp = (IMP)(imp_base - ent.imp_offset());
                 wpos++;
             }
         }
@@ -940,9 +989,9 @@ void cache_t::copyCacheNolock(objc_imp_cache_entry *buffer, int len)
 void cache_t::eraseNolock(const char *func)
 {
 #if CONFIG_USE_CACHE_LOCK
-    cacheUpdateLock.assertLocked();
+    lockdebug::assert_locked(&cacheUpdateLock);
 #else
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 #endif
 
     if (isConstantOptimizedCache()) {
@@ -970,7 +1019,7 @@ void cache_t::destroy()
 #if CONFIG_USE_CACHE_LOCK
     mutex_locker_t lock(cacheUpdateLock);
 #else
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 #endif
     if (canBeFreed()) {
         if (PrintCaches) recordDeadCache(capacity());
@@ -983,7 +1032,7 @@ void cache_t::destroy()
 * cache collection.
 **********************************************************************/
 
-#if !TARGET_OS_WIN32
+#if !TARGET_OS_EXCLAVEKIT
 
 // A sentinel (magic value) to report bad thread_get_state status.
 // Must not be a valid PC.
@@ -1025,7 +1074,7 @@ static uintptr_t _get_pc_for_thread(thread_t thread)
 }
 #endif
 
-#endif
+#endif // !TARGET_OS_EXCLAVEKIT
 
 /***********************************************************************
 * _collecting_in_critical.
@@ -1053,6 +1102,22 @@ static bool shouldUseRestartableRanges = true;
 
 void cache_t::init()
 {
+    // In debug builds, assert that the _flags field doesn't overlap with the
+    // _originalPreoptCache field. This should really be a static assert, but
+    // it's very difficult to write this test in a way that the compiler will
+    // accept as a compile-time expression.
+#if !defined(NDEBUG) && CACHE_T_HAS_FLAGS && CONFIG_USE_PREOPT_CACHES
+    // Compute the smallest value of the form 0x00fffffff that covers the max
+    // address.
+    uintptr_t maxPtr = OBJC_VM_MAX_ADDRESS;
+    while (maxPtr & (maxPtr + 1))
+        maxPtr |= maxPtr >> 1;
+
+    cache_t testCache;
+    testCache._originalPreoptCache.store((preopt_cache_t *)maxPtr, std::memory_order_relaxed);
+    ASSERT((testCache._flags & FAST_CACHE_FLAGS_MASK) == 0);
+#endif
+
 #if HAVE_TASK_RESTARTABLE_RANGES
     mach_msg_type_number_t count = 0;
     kern_return_t kr;
@@ -1071,9 +1136,11 @@ void cache_t::init()
 
 static int _collecting_in_critical(void)
 {
-#if TARGET_OS_WIN32
-    return TRUE;
-#elif HAVE_TASK_RESTARTABLE_RANGES
+#if TARGET_OS_EXCLAVEKIT
+    return FALSE;
+#else
+
+#if HAVE_TASK_RESTARTABLE_RANGES
     // Only use restartable ranges if we registered them earlier.
     if (shouldUseRestartableRanges) {
         kern_return_t kr = task_restartable_ranges_synchronize(mach_task_self());
@@ -1117,18 +1184,7 @@ static int _collecting_in_critical(void)
             continue;
 
         // Find out where thread is executing
-#if TARGET_OS_OSX
-//        if (oah_is_current_process_translated()) {
-//            kern_return_t ret = objc_thread_get_rip(threads[count], (uint64_t*)&pc);
-//            if (ret != KERN_SUCCESS) {
-//                pc = PC_SENTINEL;
-//            }
-//        } else {
-//            pc = _get_pc_for_thread (threads[count]);
-//        }
-#else
         pc = _get_pc_for_thread (threads[count]);
-#endif
 
         // Check for bad status, and if so, assume the worse (can't collect)
         if (pc == PC_SENTINEL)
@@ -1161,6 +1217,8 @@ static int _collecting_in_critical(void)
 
     // Return our finding
     return result;
+
+#endif // !TARGET_OS_EXCLAVEKIT
 }
 
 
@@ -1222,9 +1280,9 @@ static void _garbage_make_room(void)
 void cache_t::collect_free(bucket_t *data, mask_t capacity)
 {
 #if CONFIG_USE_CACHE_LOCK
-    cacheUpdateLock.assertLocked();
+    lockdebug::assert_locked(&cacheUpdateLock);
 #else
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 #endif
 
     if (PrintCaches) recordDeadCache(capacity);
@@ -1244,9 +1302,9 @@ void cache_t::collect_free(bucket_t *data, mask_t capacity)
 void cache_t::collectNolock(bool collectALot)
 {
 #if CONFIG_USE_CACHE_LOCK
-    cacheUpdateLock.assertLocked();
+    lockdebug::assert_locked(&cacheUpdateLock);
 #else
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 #endif
 
     // Done if the garbage is not full
@@ -1280,6 +1338,19 @@ void cache_t::collectNolock(bool collectALot)
         _objc_inform ("CACHES: COLLECTING %zu bytes (%zu allocations, %zu collections)", garbage_byte_size, cache_allocations, cache_collections);
     }
     
+    if (DebugScribbleCaches) {
+        // The most recently added garbage is at the end. Scribble
+        // those first to maximize the chances of hitting a race.
+        size_t count = garbage_count;
+        while (count--) {
+            bucket_t *ptr = garbage_refs[count];
+            size_t bucketCount = malloc_size(ptr) / sizeof(bucket_t);
+            for (size_t i = 0; i < bucketCount; i++)
+                ptr[i].scribbleIMP((uintptr_t)ptr);
+
+        }
+    }
+
     // Dispose all refs now in the garbage
     // Erase each entry so debugging tools don't see stale pointers.
     while (garbage_count--) {
@@ -1545,7 +1616,7 @@ OBJC_EXPORT bucket_t * objc_cache_buckets(const cache_t * cache) {
 #if CONFIG_USE_PREOPT_CACHES
 
 OBJC_EXPORT const preopt_cache_t * _Nonnull objc_cache_preoptCache(const cache_t * _Nonnull cache) {
-    return cache->preopt_cache();
+    return cache->preopt_cache(/*authenticated*/false);
 }
 
 OBJC_EXPORT bool objc_cache_isConstantOptimizedCache(const cache_t * _Nonnull cache, bool strict, uintptr_t empty_addr) {
@@ -1573,6 +1644,3 @@ OBJC_EXPORT uint32_t objc_cache_occupied(const cache_t * _Nonnull cache) {
 OBJC_EXPORT unsigned objc_cache_capacity(const struct cache_t * _Nonnull cache) {
     return cache->capacity();
 }
-
-// __OBJC2__
-#endif

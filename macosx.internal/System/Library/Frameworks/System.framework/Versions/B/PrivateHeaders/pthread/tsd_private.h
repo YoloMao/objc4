@@ -49,45 +49,34 @@
 
 #ifndef __ASSEMBLER__
 
-#include <System/machine/cpu_capabilities.h>
+#include <machine/cpu_capabilities.h>
 #include <sys/cdefs.h>
 #include <TargetConditionals.h>
 #include <Availability.h>
 #include <os/tsd.h>
-#include <pthread/spinlock_private.h>
-
-#ifndef __TSD_MACH_THREAD_SELF
-#define __TSD_MACH_THREAD_SELF 3
-#endif
-
-#ifndef __TSD_THREAD_QOS_CLASS
-#define __TSD_THREAD_QOS_CLASS 4
-#endif
-
-#ifndef __TSD_RETURN_TO_KERNEL
-#define __TSD_RETURN_TO_KERNEL 5
-#endif
-
-#ifndef __TSD_PTR_MUNGE
-#define __TSD_PTR_MUNGE 7
-#endif
-
-#ifndef __TSD_MACH_SPECIAL_REPLY
-#define __TSD_MACH_SPECIAL_REPLY 8
-#endif
 
 /* Constant TSD slots for inline pthread_getspecific() usage. */
 
 /* Keys 0 - 9 are for Libsyscall/libplatform usage */
-#define _PTHREAD_TSD_SLOT_PTHREAD_SELF __TSD_THREAD_SELF
-#define _PTHREAD_TSD_SLOT_ERRNO __TSD_ERRNO
-#define _PTHREAD_TSD_SLOT_MIG_REPLY __TSD_MIG_REPLY
-#define _PTHREAD_TSD_SLOT_MACH_THREAD_SELF __TSD_MACH_THREAD_SELF
-#define _PTHREAD_TSD_SLOT_PTHREAD_QOS_CLASS	__TSD_THREAD_QOS_CLASS
-#define _PTHREAD_TSD_SLOT_RETURN_TO_KERNEL __TSD_RETURN_TO_KERNEL
-#define _PTHREAD_TSD_SLOT_PTR_MUNGE __TSD_PTR_MUNGE
-#define _PTHREAD_TSD_SLOT_MACH_SPECIAL_REPLY __TSD_MACH_SPECIAL_REPLY
-//#define _PTHREAD_TSD_SLOT_SEMAPHORE_CACHE __TSD_SEMAPHORE_CACHE
+#define _PTHREAD_TSD_SLOT_PTHREAD_SELF              __TSD_THREAD_SELF
+#define _PTHREAD_TSD_SLOT_ERRNO                     __TSD_ERRNO
+#define _PTHREAD_TSD_SLOT_MIG_REPLY                 __TSD_MIG_REPLY
+#define _PTHREAD_TSD_SLOT_MACH_THREAD_SELF          __TSD_MACH_THREAD_SELF
+#define _PTHREAD_TSD_SLOT_PTHREAD_QOS_CLASS         __TSD_THREAD_QOS_CLASS
+#define _PTHREAD_TSD_SLOT_RETURN_TO_KERNEL          __TSD_RETURN_TO_KERNEL
+#define _PTHREAD_TSD_SLOT_PTR_MUNGE                 __TSD_PTR_MUNGE
+#define _PTHREAD_TSD_SLOT_MACH_SPECIAL_REPLY        __TSD_MACH_SPECIAL_REPLY
+#define _PTHREAD_TSD_SLOT_SEMAPHORE_CACHE           __TSD_SEMAPHORE_CACHE
+
+#define _PTHREAD_TSD_SLOT_PTHREAD_SELF_TYPE         pthread_t
+#define _PTHREAD_TSD_SLOT_ERRNO_TYPE                int *
+#define _PTHREAD_TSD_SLOT_MIG_REPLY_TYPE            mach_port_t
+#define _PTHREAD_TSD_SLOT_MACH_THREAD_SELF_TYPE     mach_port_t
+#define _PTHREAD_TSD_SLOT_PTHREAD_QOS_CLASS_TYPE    pthread_priority_t
+#define _PTHREAD_TSD_SLOT_RETURN_TO_KERNEL_TYPE     uintptr_t
+#define _PTHREAD_TSD_SLOT_PTR_MUNGE_TYPE            uintptr_t
+#define _PTHREAD_TSD_SLOT_MACH_SPECIAL_REPLY_TYPE   mach_port_t
+#define _PTHREAD_TSD_SLOT_SEMAPHORE_CACHE_TYPE      semaphore_t
 
 /*
  * Windows 64-bit ABI bakes %gs relative accesses into its code in the same
@@ -116,7 +105,7 @@
 /* for usage by dyld */
 #define __PTK_LIBC_DYLD_Unwind_SjLj_Key	18
 
-/* Keys 20-29 for libdispatch usage */
+/* Keys 20-29,120-125 for libdispatch usage */
 #define __PTK_LIBDISPATCH_KEY0		20
 #define __PTK_LIBDISPATCH_KEY1		21
 #define __PTK_LIBDISPATCH_KEY2		22
@@ -127,6 +116,12 @@
 #define __PTK_LIBDISPATCH_KEY7		27
 #define __PTK_LIBDISPATCH_KEY8		28
 #define __PTK_LIBDISPATCH_KEY9		29
+
+#define __PTK_LIBDISPATCH_KEY10		120
+#define __PTK_LIBDISPATCH_KEY11		121
+#define __PTK_LIBDISPATCH_KEY12		122
+#define __PTK_LIBDISPATCH_KEY13		123
+#define __PTK_LIBDISPATCH_KEY14		124
 
 /* Keys 30-255 for Non Libsystem usage */
 
@@ -225,21 +220,41 @@
 #define __PTK_FRAMEWORK_SWIFT_KEY8		108
 #define __PTK_FRAMEWORK_SWIFT_KEY9		109
 
-/* Keys 190 - 194 are for the use of PerfUtils */
-#define __PTK_PERF_UTILS_KEY0		190
-#define __PTK_PERF_UTILS_KEY1		191
-#define __PTK_PERF_UTILS_KEY2		192
-#define __PTK_PERF_UTILS_KEY3		193
-#define __PTK_PERF_UTILS_KEY4		194
+/* Keys 110-115 for libmalloc */
+#define __PTK_LIBMALLOC_KEY0		110
+#define __PTK_LIBMALLOC_KEY1		111
+#define __PTK_LIBMALLOC_KEY2		112
+#define __PTK_LIBMALLOC_KEY3		113
+#define __PTK_LIBMALLOC_KEY4		114
 
-/* Keys 210 - 229 are for libSystem usage within the iOS Simulator */
-/* They are offset from their corresponding libSystem keys by 200 */
-#define __PTK_LIBC_SIM_LOCALE_KEY	210
-#define __PTK_LIBC_SIM_TTYNAME_KEY	211
+/* Keys 115-120 for libdispatch workgroups */
+#define __PTK_LIBDISPATCH_WORKGROUP_KEY0		115
+#define __PTK_LIBDISPATCH_WORKGROUP_KEY1		116
+#define __PTK_LIBDISPATCH_WORKGROUP_KEY2		117
+#define __PTK_LIBDISPATCH_WORKGROUP_KEY3		118
+#define __PTK_LIBDISPATCH_WORKGROUP_KEY4		119
+
+/* 120 - 124 : libdispatch, see above */
+
+/* 125 - 209 for shared cache dylibs __thread support */
+
+/* Keys 210 - 216 are for libSystem usage within the iOS Simulator
+   for runtimes older than iOS 15.4.
+   They are offset from their corresponding libSystem keys by 200.
+   Keys 217-229 are also reserved for Simulator libSystem. */
+#define __PTK_LIBC_SIM_LOCALE_KEY		210
 #define __PTK_LIBC_SIM_LOCALTIME_KEY	212
-#define __PTK_LIBC_SIM_GMTIME_KEY	213
+#define __PTK_LIBC_SIM_GMTIME_KEY		213
 #define __PTK_LIBC_SIM_GDTOA_BIGINT_KEY	214
 #define __PTK_LIBC_SIM_PARSEFLOAT_KEY	215
+#define __PTK_LIBC_SIM_TTYNAME_KEY		216
+
+/* objc_trace */
+#define __PTK_PERF_UTILS_KEY0   	230
+
+/* libsanitizers */
+#define __PTK_LIBSANITIZERS_KEY0		231
+#define __PTK_LIBSANITIZERS_KEY1		232
 
 __BEGIN_DECLS
 
@@ -272,7 +287,7 @@ extern const struct pthread_layout_offsets_s {
 __header_always_inline int
 _pthread_has_direct_tsd(void)
 {
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
 	return 0;
 #else
 	return 1;
@@ -283,7 +298,7 @@ _pthread_has_direct_tsd(void)
 __header_always_inline void *
 _pthread_getspecific_direct(unsigned long slot)
 {
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
 	return pthread_getspecific(slot);
 #else
 	return _os_tsd_get_direct(slot);
@@ -295,7 +310,7 @@ _pthread_getspecific_direct(unsigned long slot)
 __header_always_inline int
 _pthread_setspecific_direct(unsigned long slot, void * val)
 {
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
 	return _pthread_setspecific_static(slot, val);
 #else
 	return _os_tsd_set_direct(slot, val);

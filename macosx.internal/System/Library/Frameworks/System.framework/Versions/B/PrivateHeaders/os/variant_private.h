@@ -26,6 +26,8 @@
 #include <os/base.h>
 #include <os/availability.h>
 
+OS_ASSUME_PTR_ABI_SINGLE_BEGIN
+
 /*! @header
  * OS Variant SPI
  *
@@ -201,6 +203,20 @@ bool
 os_variant_uses_ephemeral_storage(const char *subsystem);
 
 /*!
+ * @function os_variant_allows_security_research
+ *
+ * @abstract returns whether the host permits security research
+ *
+ * @result
+ * Returns true if the system permits itself to be attacked by untrustworthy
+ * code for the purposes of security research.
+ */
+API_AVAILABLE(macosx(12.0), ios(15.0), tvos(15.0), watchos(8.0))
+OS_EXPORT OS_WARN_RESULT
+bool
+os_variant_allows_security_research(const char *subsystem);
+
+/*!
  * @function os_variant_is_basesystem
  *
  * @abstract returns whether this system variant is the macOS BaseSystem
@@ -262,6 +278,7 @@ os_variant_is_recovery(const char *subsystem);
  *     IsDarwinOS
  *     UsesEphemeralStorage
  *     IsRecovery
+ *     AllowsSecurityResearch
  *
  * @result
  * Returns true if the system is of the specified variant.
@@ -286,13 +303,19 @@ os_variant_check(const char *subsystem, const char *variant);
  */
 API_AVAILABLE(macosx(10.16), ios(14.0), tvos(13.0), watchos(7.0))
 OS_EXPORT OS_WARN_RESULT
-char *
+char *__unsafe_indexable
 os_variant_copy_description(const char *subsystem);
 
+/*!
+ * @function os_variant_init_4launchd
+ *
+ * @abstract private initializer for launchd; do not use
+ */
 OS_EXPORT
 void
 os_variant_init_4launchd(const char *boot_mode);
 
 __END_DECLS
+OS_ASSUME_PTR_ABI_SINGLE_END
 
 #endif // __os_variant_H__

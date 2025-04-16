@@ -1,20 +1,15 @@
 // xpc leaks memory in dlopen(). Disable it.
 // TEST_ENV XPC_SERVICES_UNAVAILABLE=1
 /*
+TEST_CONFIG OS=!exclavekit
 TEST_BUILD
+    $C{COMPILE}   $DIR/unload5.m -o libunload5.dylib -dynamiclib -install_name /usr/lib/libz.1.dylib
     $C{COMPILE}   $DIR/unload4.m -o unload4.dylib -dynamiclib
     $C{COMPILE_C} $DIR/unload3.c -o unload3.dylib -dynamiclib
-    $C{COMPILE}   $DIR/unload2.m -o unload2.bundle -bundle $C{FORCE_LOAD_ARCLITE} -Xlinker -undefined -Xlinker dynamic_lookup
+    $C{COMPILE}   $DIR/unload2.m -o unload2.bundle -bundle $C{FORCE_LOAD_ARCLITE} -L. -lunload5
     $C{COMPILE}   $DIR/unload.m -o unload.exe -framework Foundation
 END
 */
-
-/*
-TEST_BUILD_OUTPUT
-ld: warning: -undefined dynamic_lookup is deprecated on .*
-OR
-END
- */
 
 #include "test.h"
 #include <objc/runtime.h>
@@ -91,14 +86,14 @@ void cycle(void)
     // give BigClass and BigClass->isa large method caches (4692641)
     // Flush caches part way through to test large empty caches.
     for (i = 0; i < 3000; i++) {
-        sprintf(buf, "method_%d", i);
+        snprintf(buf, sizeof(buf), "method_%d", i);
         SEL sel = sel_registerName(buf);
         ((void(*)(id, SEL))objc_msgSend)(o2, sel);
         ((void(*)(id, SEL))objc_msgSend)(object_getClass(o2), sel);
     }
     _objc_flush_caches(object_getClass(o2));
     for (i = 0; i < 17000; i++) {
-        sprintf(buf, "method_%d", i);
+        snprintf(buf, sizeof(buf), "method_%d", i);
         SEL sel = sel_registerName(buf);
         ((void(*)(id, SEL))objc_msgSend)(o2, sel);
         ((void(*)(id, SEL))objc_msgSend)(object_getClass(o2), sel);
@@ -138,8 +133,7 @@ void cycle(void)
 
 int main()
 {
-    char *useClosures = getenv("DYLD_USE_CLOSURES");
-    int dyld3 = useClosures != NULL && useClosures[0] != '0';
+    int dyld3 = testdyld3();
 
     objc_setForwardHandler((void*)&forward_handler, (void*)&forward_handler);
 
@@ -148,12 +142,16 @@ int main()
 #else
     int count = is_guardmalloc() ? 10 : 100;
 #endif
-    
+
+    // Do some initial cycles to get one-time or few-times work out of the way.
+    // Empirically, four seems to be enough to get it all done. Note: libxpc
+    // builds up allocations without limit when this program is run from the
+    // terminal, but not from the test script. Watch out for that in case it
+    // starts happening from the test script. rdar://114027966
     cycle();
-#if __LP64__
-    // fixme heap use goes up 512 bytes after the 2nd cycle only - bad or not?
     cycle();
-#endif
+    cycle();
+    cycle();
 
     leak_mark();
     for (int i = 0; i < count; i++) {
@@ -168,9 +166,7 @@ int main()
     int err = dlclose(dylib);
     testassert(err == 0);
     err = dlclose(dylib);
-    // dyld3 doesn't error when dlclosing the dylib twice. This is probably expected. rdar://problem/53769374
-    if (!dyld3)
-        testassert(err == -1);  // already closed
+    // dyld doesn't error when dlclosing the dylib twice. This is probably expected. rdar://problem/53769374
 
     // Make sure dylibs with real objc content cannot close
     dylib = dlopen("unload4.dylib", RTLD_LAZY);
@@ -178,9 +174,7 @@ int main()
     err = dlclose(dylib);
     testassert(err == 0);
     err = dlclose(dylib);
-    // dyld3 doesn't error when dlclosing the dylib twice. This is probably expected. rdar://problem/53769374
-    if (!dyld3)
-        testassert(err == -1);  // already closed
+    // dyld doesn't error when dlclosing the dylib twice. This is probably expected. rdar://problem/53769374
 
     succeed(__FILE__);
 }

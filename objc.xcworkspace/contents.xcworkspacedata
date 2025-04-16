@@ -99,6 +99,12 @@
                location = "group:os"
                name = "os">
                <FileRef
+                  location = "group:log_simple_private_impl.h">
+               </FileRef>
+               <FileRef
+                  location = "group:log_simple_private.h">
+               </FileRef>
+               <FileRef
                   location = "group:linker_set.h">
                </FileRef>
                <FileRef

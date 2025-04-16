@@ -2,14 +2,14 @@
  * Copyright (c) 2007, 2012 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
+ *
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
  * Version 2.0 (the 'License'). You may not use this file except in
  * compliance with the License. Please obtain a copy of the License at
  * http://www.opensource.apple.com/apsl/ and read it before using this
  * file.
- * 
+ *
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -17,7 +17,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
  * Please see the License for the specific language governing rights and
  * limitations under the License.
- * 
+ *
  * @APPLE_LICENSE_HEADER_END@
  */
 
@@ -29,10 +29,7 @@
 #include <sys/event.h>
 #include <Availability.h>
 #include <pthread/pthread.h>
-#include <pthread/qos.h>
-#ifndef _PTHREAD_BUILDING_PTHREAD_
 #include <pthread/qos_private.h>
-#endif
 
 #define PTHREAD_WORKQUEUE_SPI_VERSION 20170201
 
@@ -46,6 +43,7 @@
 #define WORKQ_FEATURE_MAINTENANCE	0x10	// QOS class maintenance
 #define WORKQ_FEATURE_KEVENT        0x40    // Support for direct kevent delivery
 #define WORKQ_FEATURE_WORKLOOP      0x80    // Support for direct workloop requests
+#define WORKQ_FEATURE_COOPERATIVE_WORKQ 0x100    // Support for direct workloop requests
 
 /* Legacy dispatch priority bands */
 
@@ -60,12 +58,16 @@
 /* Legacy dispatch workqueue function flags */
 #define WORKQ_ADDTHREADS_OPTION_OVERCOMMIT 0x00000001
 
+/* Flags for _pthread_workloop_create function */
+#define PTHREAD_WORKLOOP_CREATE_WITH_BOUND_THREAD 0x00000001
+
 __BEGIN_DECLS
 
 // Legacy callback prototype, used with pthread_workqueue_setdispatch_np
 typedef void (*pthread_workqueue_function_t)(int queue_priority, int options, void *ctxt);
 // New callback prototype, used with pthread_workqueue_init
-typedef void (*pthread_workqueue_function2_t)(pthread_priority_t priority);
+typedef unsigned long pthread_workqueue_function2_arg_t;
+typedef void (*pthread_workqueue_function2_t)(pthread_workqueue_function2_arg_t arg);
 
 // Newer callback prototype, used in conjection with function2 when there are kevents to deliver
 // both parameters are in/out parameters
@@ -135,6 +137,11 @@ __API_AVAILABLE(macos(10.10), ios(8.0))
 int
 _pthread_workqueue_addthreads(int numthreads, pthread_priority_t priority);
 
+// Request cooperative worker threads (fine grained priority)
+__API_AVAILABLE(macos(12.0), ios(15.0))
+int
+_pthread_workqueue_add_cooperativethreads(int numthreads, pthread_priority_t priority);
+
 // Should this thread return to the kernel?
 __API_AVAILABLE(macos(10.13), ios(11.0), tvos(11.0), watchos(4.0))
 bool
@@ -196,6 +203,10 @@ __API_AVAILABLE(macos(10.10.2))
 int
 _pthread_workqueue_asynchronous_override_reset_all_self(void);
 
+__API_AVAILABLE(macos(14.3), ios(17.4), tvos(17.4), watchos(10.4), xros(1.1), driverkit(23.4))
+int
+_pthread_workqueue_allow_send_signals(int signum);
+
 __API_AVAILABLE(macos(10.14), ios(12.0), tvos(12.0), watchos(5.0))
 int
 _pthread_workloop_create(uint64_t workloop_id, uint64_t options, pthread_attr_t *attr);
@@ -203,6 +214,7 @@ _pthread_workloop_create(uint64_t workloop_id, uint64_t options, pthread_attr_t 
 __API_AVAILABLE(macos(10.14), ios(12.0), tvos(12.0), watchos(5.0))
 int
 _pthread_workloop_destroy(uint64_t workloop_id);
+
 
 __END_DECLS
 

@@ -27,6 +27,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <mach/port.h>
 #include <os/base_private.h>
 #include <os/lock.h>
 
@@ -36,7 +37,7 @@ OS_ASSUME_NONNULL_BEGIN
  * Low-level lock SPI
  */
 
-#define OS_LOCK_SPI_VERSION 20171006
+#define OS_LOCK_SPI_VERSION 20190424
 
 /*!
  * @typedef os_lock_t
@@ -276,6 +277,11 @@ void os_lock_unlock(os_lock_t lock);
  * This flag allows for the kernel to use adaptive spinning when the holder
  * of the lock is currently on core. This should only be used for locks
  * where the protected critical section is always extremely short.
+ *
+ * @const OS_UNFAIR_LOCK_DEADLINE
+ * This flag can be used as an argument to os_unfair_lock_trylock_with_options
+ * to specify that the timeout specified is an absolute deadline until which the
+ * caller is willing to wait to acquire the lock.
  */
 OS_OPTIONS(os_unfair_lock_options, uint32_t,
 	OS_UNFAIR_LOCK_NONE OS_SWIFT_NAME(None)
@@ -284,7 +290,10 @@ OS_OPTIONS(os_unfair_lock_options, uint32_t,
 		OS_UNFAIR_LOCK_AVAILABILITY = 0x00010000,
 	OS_UNFAIR_LOCK_ADAPTIVE_SPIN OS_SWIFT_NAME(AdaptiveSpin)
 		__API_AVAILABLE(macos(10.15), ios(13.0),
-		tvos(13.0), watchos(6.0)/*, bridgeos(4.0)*/) = 0x00040000,
+		tvos(13.0), watchos(6.0)) = 0x00040000,
+	OS_UNFAIR_LOCK_DEADLINE OS_SWIFT_NAME(Deadline)
+		__API_AVAILABLE(macos(14.3), ios(17.4),
+		watchos(10.4), tvos(17.4)) = 0x02000000,
 );
 
 #if __swift__
@@ -314,24 +323,56 @@ OS_EXPORT OS_NOTHROW OS_NONNULL_ALL
 void os_unfair_lock_lock_with_options(os_unfair_lock_t lock,
 		os_unfair_lock_options_t options);
 
-/*! @group os_unfair_lock no-TSD interfaces
+/*!
+ * @function os_unfair_lock_trylock_with_options
+ *
+ * @abstract
+ * Locks an os_unfair_lock if it is not already locked. If the lock is already
+ * acquired, it will wait up until the specified timeout.
+ *
+ * @param lock
+ * Pointer to an os_unfair_lock.
+ *
+ * @param options
+ * Options to alter the behavior of the lock. See os_unfair_lock_options_t.
+ *
+ * @params duration
+ * Max time to wait for contended lock before returning. The input by default is
+ * a duration specified in nanoseconds. Clients can optionally specify an
+ * absolute deadline in mach_absolute_time units along with the
+ * OS_UNFAIR_LOCK_DEADLINE flag in the options.  Duration of 0 has the same
+ * behaviour as os_unfair_lock_trylock().
+ *
+ * @result
+ * Returns true if the lock was succesfully locked and false if the lock was
+ * already locked or the timeout was hit.
+ */
+SPI_AVAILABLE(macos(14.3), ios(17.4), watchos(10.4), tvos(17.4))
+OS_EXPORT OS_NOTHROW OS_NONNULL_ALL
+bool os_unfair_lock_trylock_with_options(os_unfair_lock_t lock,
+		os_unfair_lock_options_t options, uint64_t duration);
+
+/*!
+ * @group os_unfair_lock no-TSD interfaces
  *
  * Like the above, but don't require being on a thread with valid TSD, so they
- * can be called from injected mach-threads.  The normal routines use the TSD
- * value for mach_thread_self(), these routines use MACH_PORT_DEAD for the
- * locked value instead.  As a result, they will be unable to resolve priority
- * inversions.
+ * can be called from injected mach-threads.
  *
- * This should only be used by libpthread.
+ * The normal routines use the TSD value for mach_thread_self(), but mach
+ * threads do not have TSDs. Instead these functions require the value for
+ * mach_thread_self() to be passed explicitly.
  *
+ * This should only be used directly by libpthread.
  */
-OS_UNFAIR_LOCK_AVAILABILITY
+__API_AVAILABLE(macos(10.16), ios(14.0), tvos(14.0), watchos(7.0))
 OS_EXPORT OS_NOTHROW OS_NONNULL_ALL
-void os_unfair_lock_lock_no_tsd_4libpthread(os_unfair_lock_t lock);
+void os_unfair_lock_lock_no_tsd(os_unfair_lock_t lock,
+		os_unfair_lock_options_t options, mach_port_t mts);
 
-OS_UNFAIR_LOCK_AVAILABILITY
+__API_AVAILABLE(macos(10.16), ios(14.0), tvos(14.0), watchos(7.0))
 OS_EXPORT OS_NOTHROW OS_NONNULL_ALL
-void os_unfair_lock_unlock_no_tsd_4libpthread(os_unfair_lock_t lock);
+void os_unfair_lock_unlock_no_tsd(os_unfair_lock_t lock, mach_port_t mts);
+
 
 /*! @group os_unfair_recursive_lock SPI
  *
@@ -440,7 +481,7 @@ bool os_unfair_recursive_lock_tryunlock4objc(os_unfair_recursive_lock_t lock);
 OS_UNFAIR_RECURSIVE_LOCK_AVAILABILITY
 OS_INLINE OS_ALWAYS_INLINE OS_NOTHROW OS_NONNULL_ALL
 void
-os_unfair_recursive_lock_assert_owner(os_unfair_recursive_lock_t lock)
+os_unfair_recursive_lock_assert_owner(const os_unfair_recursive_lock *lock)
 {
 	os_unfair_lock_assert_owner(&lock->ourl_lock);
 }
@@ -454,7 +495,7 @@ os_unfair_recursive_lock_assert_owner(os_unfair_recursive_lock_t lock)
 OS_UNFAIR_RECURSIVE_LOCK_AVAILABILITY
 OS_INLINE OS_ALWAYS_INLINE OS_NOTHROW OS_NONNULL_ALL
 void
-os_unfair_recursive_lock_assert_not_owner(os_unfair_recursive_lock_t lock)
+os_unfair_recursive_lock_assert_not_owner(const os_unfair_recursive_lock *lock)
 {
 	os_unfair_lock_assert_not_owner(&lock->ourl_lock);
 }
@@ -605,6 +646,57 @@ OS_ASSUME_NONNULL_BEGIN
 #endif
 
 /*!
+ * @function os_unfair_lock_lock_no_tsd_inline
+ *
+ * @abstract
+ * Locks an os_unfair_lock, without requiring valid TSD.
+ *
+ * This should only be used directly by libpthread.
+ *
+ * @param lock
+ * Pointer to an os_unfair_lock.
+ */
+__API_AVAILABLE(macos(10.16), ios(14.0), tvos(14.0), watchos(7.0))
+OS_INLINE OS_ALWAYS_INLINE OS_NONNULL_ALL
+void
+os_unfair_lock_lock_no_tsd_inline(os_unfair_lock_t lock,
+		os_unfair_lock_options_t options, mach_port_t mts)
+{
+	os_unfair_lock unlocked = OS_UNFAIR_LOCK_UNLOCKED, locked = { mts };
+	if (!OSLOCK_STD(atomic_compare_exchange_strong_explicit)(
+			(_os_atomic_unfair_lock*)lock, &unlocked, locked,
+			OSLOCK_STD(memory_order_acquire),
+			OSLOCK_STD(memory_order_relaxed))) {
+		return os_unfair_lock_lock_no_tsd(lock, options, mts);
+	}
+}
+
+/*!
+ * @function os_unfair_lock_unlock_no_tsd_inline
+ *
+ * @abstract
+ * Unlocks an os_unfair_lock, without requiring valid TSD.
+ *
+ * This should only be used directly by libpthread.
+ *
+ * @param lock
+ * Pointer to an os_unfair_lock.
+ */
+__API_AVAILABLE(macos(10.16), ios(14.0), tvos(14.0), watchos(7.0))
+OS_INLINE OS_ALWAYS_INLINE OS_NONNULL_ALL
+void
+os_unfair_lock_unlock_no_tsd_inline(os_unfair_lock_t lock, mach_port_t mts)
+{
+	os_unfair_lock unlocked = OS_UNFAIR_LOCK_UNLOCKED, locked = { mts };
+	if (!OSLOCK_STD(atomic_compare_exchange_strong_explicit)(
+			(_os_atomic_unfair_lock*)lock, &locked, unlocked,
+			OSLOCK_STD(memory_order_release),
+			OSLOCK_STD(memory_order_relaxed))) {
+		return os_unfair_lock_unlock_no_tsd(lock, mts);
+	}
+}
+
+/*!
  * @function os_unfair_lock_lock_inline
  *
  * @abstract
@@ -717,58 +809,6 @@ os_unfair_lock_unlock_inline(os_unfair_lock_t lock)
 			OSLOCK_STD(memory_order_release),
 			OSLOCK_STD(memory_order_relaxed))) {
 		return os_unfair_lock_unlock(lock);
-	}
-}
-
-/*!
- * @function os_unfair_lock_lock_inline_no_tsd_4libpthread
- *
- * @abstract
- * Locks an os_unfair_lock, without requiring valid TSD.
- *
- * This should only be used by libpthread.
- *
- * @param lock
- * Pointer to an os_unfair_lock.
- */
-OS_UNFAIR_LOCK_AVAILABILITY
-OS_INLINE OS_ALWAYS_INLINE OS_NONNULL_ALL
-void
-os_unfair_lock_lock_inline_no_tsd_4libpthread(os_unfair_lock_t lock)
-{
-	uint32_t mts = MACH_PORT_DEAD;
-	os_unfair_lock unlocked = OS_UNFAIR_LOCK_UNLOCKED, locked = { mts };
-	if (!OSLOCK_STD(atomic_compare_exchange_strong_explicit)(
-			(_os_atomic_unfair_lock*)lock, &unlocked, locked,
-			OSLOCK_STD(memory_order_acquire),
-			OSLOCK_STD(memory_order_relaxed))) {
-		return os_unfair_lock_lock_no_tsd_4libpthread(lock);
-	}
-}
-
-/*!
- * @function os_unfair_lock_unlock_inline_no_tsd_4libpthread
- *
- * @abstract
- * Unlocks an os_unfair_lock, without requiring valid TSD.
- *
- * This should only be used by libpthread.
- *
- * @param lock
- * Pointer to an os_unfair_lock.
- */
-OS_UNFAIR_LOCK_AVAILABILITY
-OS_INLINE OS_ALWAYS_INLINE OS_NONNULL_ALL
-void
-os_unfair_lock_unlock_inline_no_tsd_4libpthread(os_unfair_lock_t lock)
-{
-	uint32_t mts = MACH_PORT_DEAD;
-	os_unfair_lock unlocked = OS_UNFAIR_LOCK_UNLOCKED, locked = { mts };
-	if (!OSLOCK_STD(atomic_compare_exchange_strong_explicit)(
-			(_os_atomic_unfair_lock*)lock, &locked, unlocked,
-			OSLOCK_STD(memory_order_release),
-			OSLOCK_STD(memory_order_relaxed))) {
-		return os_unfair_lock_unlock_no_tsd_4libpthread(lock);
 	}
 }
 

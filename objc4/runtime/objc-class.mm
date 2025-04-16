@@ -158,8 +158,10 @@
 
 #include "objc-private.h"
 #include "objc-abi.h"
+#include "objc-malloc-instance.h"
 #include <objc/message.h>
-#if !TARGET_OS_WIN32
+
+#if !TARGET_OS_EXCLAVEKIT
 #include <os/linker_set.h>
 #endif
 
@@ -340,7 +342,7 @@ _class_getIvarMemoryManagement(Class cls, Ivar ivar)
 static ALWAYS_INLINE 
 void _object_setIvar(id obj, Ivar ivar, id value, bool assumeStrong)
 {
-    if (!ivar || obj->isTaggedPointerOrNil()) return;
+    if (!ivar || _objc_isTaggedPointerOrNil(obj)) return;
 
     ptrdiff_t offset;
     objc_ivar_memory_management_t memoryManagement;
@@ -374,7 +376,7 @@ void object_setIvarWithStrongDefault(id obj, Ivar ivar, id value)
 
 id object_getIvar(id obj, Ivar ivar)
 {
-    if (!ivar || obj->isTaggedPointerOrNil()) return nil;
+    if (!ivar || _objc_isTaggedPointerOrNil(obj)) return nil;
 
     ptrdiff_t offset;
     objc_ivar_memory_management_t memoryManagement;
@@ -396,7 +398,7 @@ Ivar _object_setInstanceVariable(id obj, const char *name, void *value,
 {
     Ivar ivar = nil;
 
-    if (name && !obj->isTaggedPointerOrNil()) {
+    if (name && !_objc_isTaggedPointerOrNil(obj)) {
         if ((ivar = _class_getVariable(obj->ISA(), name))) {
             _object_setIvar(obj, ivar, (id)value, assumeStrong);
         }
@@ -418,7 +420,7 @@ Ivar object_setInstanceVariableWithStrongDefault(id obj, const char *name,
 
 Ivar object_getInstanceVariable(id obj, const char *name, void **value)
 {
-    if (name && !obj->isTaggedPointerOrNil()) {
+    if (name && !_objc_isTaggedPointerOrNil(obj)) {
         Ivar ivar;
         if ((ivar = class_getInstanceVariable(obj->ISA(), name))) {
             if (value) *value = (void *)object_getIvar(obj, ivar);
@@ -465,7 +467,7 @@ static void object_cxxDestructFromClass(id obj, Class cls)
 **********************************************************************/
 void object_cxxDestruct(id obj)
 {
-    if (obj->isTaggedPointerOrNil()) return;
+    if (_objc_isTaggedPointerOrNil(obj)) return;
     object_cxxDestructFromClass(obj, obj->ISA());
 }
 
@@ -570,6 +572,20 @@ void fixupCopiedIvars(id newObject, id oldObject)
                 }
             }
         }
+
+        // If we have signed SEL ivars, locate and re-copy any such ivars with
+        // the appropriate re-signing.
+#if __has_feature(ptrauth_objc_interface_sel)
+        if (auto *ivars = cls->data()->ro()->ivars)
+            for (const auto &ivar : *ivars) {
+                if (ivar.type && ivar.type[0] == _C_SEL) {
+                    typedef void * __ptrauth_objc_sel AuthSEL;
+                    AuthSEL *oldSEL = (AuthSEL *)((char *)oldObject + *ivar.offset);
+                    AuthSEL *newSEL = (AuthSEL *)((char *)newObject + *ivar.offset);
+                    *newSEL = *oldSEL;
+                }
+            }
+#endif
     }
 }
 
@@ -622,12 +638,17 @@ BREAKPOINT_FUNCTION(
 /***********************************************************************
 * class_respondsToSelector.
 **********************************************************************/
+
+#if !TARGET_OS_EXCLAVEKIT
+
 BOOL class_respondsToMethod(Class cls, SEL sel)
 {
     OBJC_WARN_DEPRECATED;
 
     return class_respondsToSelector(cls, sel);
 }
+
+#endif // !TARGET_OS_EXCLAVEKIT
 
 
 BOOL class_respondsToSelector(Class cls, SEL sel)
@@ -652,6 +673,9 @@ class_respondsToSelector_inst(id inst, SEL sel, Class cls)
 * Returns the IMP that would be invoked if [obj sel] were sent, 
 * where obj is an instance of class cls.
 **********************************************************************/
+
+#if !TARGET_OS_EXCLAVEKIT
+
 IMP class_lookupMethod(Class cls, SEL sel)
 {
     OBJC_WARN_DEPRECATED;
@@ -664,6 +688,8 @@ IMP class_lookupMethod(Class cls, SEL sel)
     return class_getMethodImplementation(cls, sel);
 }
 
+#endif // !TARGET_OS_EXCLAVEKIT
+
 __attribute__((flatten))
 IMP class_getMethodImplementation(Class cls, SEL sel)
 {
@@ -671,7 +697,7 @@ IMP class_getMethodImplementation(Class cls, SEL sel)
 
     if (!cls  ||  !sel) return nil;
 
-    lockdebug_assert_no_locks_locked_except({ &loadMethodLock });
+    lockdebug::assert_no_locks_locked_except({ &loadMethodLock, SideTableGetLock });
 
     imp = lookUpImpOrNilTryCache(nil, sel, cls, LOOKUP_INITIALIZE | LOOKUP_RESOLVER);
 
@@ -701,7 +727,7 @@ IMP class_getMethodImplementation_stret(Class cls, SEL sel)
 * instrumentObjcMessageSends
 **********************************************************************/
 // Define this everywhere even if it isn't used to simplify fork() safety code.
-spinlock_t objcMsgLogLock;
+ExplicitInitLock<spinlock_t> objcMsgLogLock;
 
 #if !SUPPORT_MESSAGE_LOGGING
 
@@ -774,7 +800,7 @@ void instrumentObjcMessageSends(BOOL flag)
 
 Class _calloc_class(size_t size)
 {
-    return (Class) calloc(1, size);
+    return (Class) _calloc_canonical(size);
 }
 
 Class class_getSuperclass(Class cls)
@@ -833,26 +859,25 @@ char * method_copyArgumentType(Method m, unsigned int index)
 }
 
 /***********************************************************************
-* _class_createInstancesFromZone
-* Batch-allocating version of _class_createInstanceFromZone.
+* _class_createInstances
+* Batch-allocating version of _class_createInstance.
 * Attempts to allocate num_requested objects, each with extraBytes.
 * Returns the number of allocated objects (possibly zero), with 
 * the allocated pointers in *results.
 **********************************************************************/
 unsigned
-_class_createInstancesFromZone(Class cls, size_t extraBytes, void *zone, 
-                               id *results, unsigned num_requested)
+_class_createInstances(Class cls, size_t extraBytes, id *results,
+                       unsigned num_requested)
 {
     unsigned num_allocated;
     if (!cls) return 0;
 
     size_t size = cls->instanceSize(extraBytes);
 
-    num_allocated = 
-        malloc_zone_batch_malloc((malloc_zone_t *)(zone ? zone : malloc_default_zone()), 
-                                 size, (void**)results, num_requested);
-    for (unsigned i = 0; i < num_allocated; i++) {
-        bzero(results[i], size);
+    for (num_allocated = 0; num_allocated < num_requested; ++num_allocated) {
+        results[num_allocated] = objc::malloc_instance(size, cls);
+        if (!results[num_allocated])
+            break;
     }
 
     // Construct each object, and delete any that fail construction.
@@ -883,16 +908,13 @@ _class_createInstancesFromZone(Class cls, size_t extraBytes, void *zone,
 void 
 inform_duplicate(const char *name, Class oldCls, Class newCls)
 {
-#if TARGET_OS_WIN32
-    (DebugDuplicateClasses ? _objc_fatal : _objc_inform)
-        ("Class %s is implemented in two different images.", name);
-#else
     const header_info *oldHeader = _headerForClass(oldCls);
     const header_info *newHeader = _headerForClass(newCls);
     const char *oldName = oldHeader ? oldHeader->fname() : "??";
     const char *newName = newHeader ? newHeader->fname() : "??";
     const objc_duplicate_class **_dupi = NULL;
 
+#if !TARGET_OS_EXCLAVEKIT
     LINKER_SET_FOREACH(_dupi, const objc_duplicate_class **, "__objc_dupclass") {
         const objc_duplicate_class *dupi = *_dupi;
 
@@ -900,12 +922,12 @@ inform_duplicate(const char *name, Class oldCls, Class newCls)
             return;
         }
     }
+#endif // !TARGET_OS_EXCLAVEKIT
 
-    (DebugDuplicateClasses ? _objc_fatal : _objc_inform)
-        ("Class %s is implemented in both %s (%p) and %s (%p). "
+    OBJC_DEBUG_OPTION_REPORT_ERROR(DebugDuplicateClasses,
+         "Class %s is implemented in both %s (%p) and %s (%p). "
          "One of the two will be used. Which one is undefined.",
          name, oldName, oldCls, newName, newCls);
-#endif
 }
 
 
@@ -939,14 +961,22 @@ copyPropertyAttributeString(const objc_property_attribute_t *attrs,
 
     result = (char *)malloc(len + 1);
     char *s = result;
+    char *end = result + len + 1;
     for (i = 0; i < count; i++) {
         if (attrs[i].value) {
             size_t namelen = strlen(attrs[i].name);
+            size_t remaining = end - s;
+            size_t sprintfLen;
             if (namelen > 1) {
-                s += sprintf(s, "\"%s\"%s,", attrs[i].name, attrs[i].value);
+                sprintfLen = snprintf(s, remaining, "\"%s\"%s,", attrs[i].name, attrs[i].value);
             } else {
-                s += sprintf(s, "%s%s,", attrs[i].name, attrs[i].value);
+                sprintfLen = snprintf(s, remaining, "%s%s,", attrs[i].name, attrs[i].value);
             }
+            if (sprintfLen > remaining)
+                _objc_fatal("Incorrect buffer calculation for property string. "
+                            "Partial string is %s, calculated length is %zu.",
+                            result, len);
+            s += sprintfLen;
         }
     }
 

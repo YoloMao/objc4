@@ -1,16 +1,12 @@
 /*
-TEST_BUILD_OUTPUT
-.*getMethod.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-.*getMethod.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-.*getMethod.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-.*getMethod.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-END
+TEST_CFLAGS -Wno-nonnull
 */
 
 #include "test.h"
 #include "testroot.i"
 #include <objc/runtime.h>
 #include <objc/message.h>
+#include <ptrauth.h>
 
 static int state = 0;
 
@@ -33,7 +29,7 @@ typedef void (*imp_t)(id, SEL);
 int main()
 {
     Class Super_cls, Sub_cls;
-    Class buf[10];
+    Class __ptrauth_objc_isa_pointer buf[10];
     Method m;
     SEL sel;
     IMP imp;
