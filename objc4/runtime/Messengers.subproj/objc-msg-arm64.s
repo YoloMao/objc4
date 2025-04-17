@@ -28,7 +28,6 @@
 
 #ifdef __arm64__
 
-#include <arm/arch.h>
 #include "isa.h"
 #include "objc-config.h"
 #include "arm64-asm.h"
@@ -73,7 +72,6 @@ _objc_restartableRanges:
 	RestartableEntry _objc_msgLookupSuper2
 	.fill	16, 1, 0
 
-
 /* objc_super parameter to sendSuper */
 #define RECEIVER         0
 #define CLASS            __SIZEOF_POINTER__
@@ -108,6 +106,11 @@ _objc_restartableRanges:
 _objc_indexed_classes:
 	.fill ISA_INDEX_COUNT, PTRSIZE, 0
 #endif
+
+.text
+.private_extern _objc_msgSend_indirect_branch
+_objc_msgSend_indirect_branch:
+    .long LTailCallCachedImpIndirectBranch - .
 
 .macro GetClassFromIsa_p16 src, needs_auth, auth_address /* note: auth_address is not required if !needs_auth */
 
@@ -147,6 +150,13 @@ _objc_indexed_classes:
 .macro ENTRY /* name */
 	.text
 	.align 5
+	.globl    $0
+$0:
+.endmacro
+
+.macro MSG_ENTRY /*name*/
+	.text
+	.align 10
 	.globl    $0
 $0:
 .endmacro
@@ -308,13 +318,13 @@ LExit$0:
 	TailCallCachedImp x17, x10, x1, x16	// authenticate and call imp
 .elseif $0 == GETIMP
 	mov	p0, p17
-	cbz	p0, 9f			// don't ptrauth a nil imp
-	AuthAndResignAsIMP x0, x10, x1, x16	// authenticate imp and re-sign as IMP
-9:	ret				// return IMP
+	cbz	p0, 9f					// don't ptrauth a nil imp
+	AuthAndResignAsIMP x0, x10, x1, x16, x17	// authenticate imp and re-sign as IMP
+9:	ret						// return IMP
 .elseif $0 == LOOKUP
 	// No nil check for ptrauth: the caller would crash anyway when they
 	// jump to a nil IMP. We don't care if that jump also fails ptrauth.
-	AuthAndResignAsIMP x17, x10, x1, x16	// authenticate imp and re-sign as IMP
+	AuthAndResignAsIMP x17, x10, x1, x16, x10	// authenticate imp and re-sign as IMP
 	cmp	x16, x15
 	cinc	x16, x16, ne			// x16 += 1 when x15 != x16 (for instrumentation ; fallback to the parent class)
 	ret				// return imp via x17
@@ -471,28 +481,35 @@ LLookupPreopt\Function:
 	and	x9, x9, x11, LSR #53		// &=  mask
 #endif
 
-	ldr	x17, [x10, x9, LSL #3]		// x17 == sel_offs | (imp_offs << 32)
-	cmp	x12, w17, uxtw
+	// sel_offs is 26 bits because it needs to address a 64 MB buffer (~ 20 MB as of writing)
+	// keep the remaining 38 bits for the IMP offset, which may need to reach
+	// across the shared cache. This offset needs to be shifted << 2. We did this
+	// to give it even more reach, given the alignment of source (the class data)
+	// and destination (the IMP)
+	ldr	x17, [x10, x9, LSL #3]		// x17 == (sel_offs << 38) | imp_offs
+	cmp	x12, x17, LSR #38
 
 .if \Mode == GETIMP
 	b.ne	\MissLabelConstant		// cache miss
-	sub	x0, x16, x17, LSR #32		// imp = isa - imp_offs
-	SignAsImp x0
+	sbfiz x17, x17, #2, #38         // imp_offs = combined_imp_and_sel[0..37] << 2
+	sub	x0, x16, x17        		// imp = isa - imp_offs
+	SignAsImp x0, x17
 	ret
 .else
-	b.ne	5f				// cache miss
-	sub	x17, x16, x17, LSR #32		// imp = isa - imp_offs
+	b.ne	5f				        // cache miss
+	sbfiz x17, x17, #2, #38         // imp_offs = combined_imp_and_sel[0..37] << 2
+	sub x17, x16, x17               // imp = isa - imp_offs
 .if \Mode == NORMAL
 	br	x17
 .elseif \Mode == LOOKUP
 	orr x16, x16, #3 // for instrumentation, note that we hit a constant cache
-	SignAsImp x17
+	SignAsImp x17, x10
 	ret
 .else
 .abort  unhandled mode \Mode
 .endif
 
-5:	ldursw	x9, [x10, #-8]			// offset -8 is the fallback offset
+5:	ldur	x9, [x10, #-16]			// offset -16 is the fallback offset
 	add	x16, x16, x9			// compute the fallback isa
 	b	LLookupStart\Function		// lookup again with a new isa
 .endif
@@ -543,12 +560,20 @@ _objc_debug_taggedpointer_classes:
 	// x16 = _objc_debug_taggedpointer_classes[x12]
 	adrp	x10, _objc_debug_taggedpointer_classes@PAGE
 	add	x10, x10, _objc_debug_taggedpointer_classes@PAGEOFF
+#if !__has_feature(ptrauth_calls)
 	ldr	x16, [x10, x12, LSL #3]
+#else
+	add	x10, x10, x12, LSL #3
+	ldr	x14, [x10]	// x14 = unauthenticated isa
+	mov	x16, x14
+	movk	x10, #TAGGED_POINTER_TABLE_ENTRY_DISCRIMINATOR, LSL #48
+	autdb	x16, x10
+#endif
 
 .endmacro
 #endif
 
-	ENTRY _objc_msgSend
+	MSG_ENTRY _objc_msgSend
 	UNWIND _objc_msgSend, NoFrame
 
 	cmp	p0, #0			// nil check and tagged pointer check
@@ -557,8 +582,8 @@ _objc_debug_taggedpointer_classes:
 #else
 	b.eq	LReturnZero
 #endif
-	ldr	p13, [x0]		// p13 = isa
-	GetClassFromIsa_p16 p13, 1, x0	// p16 = class
+	ldr	p14, [x0]		// p14 = raw isa
+	GetClassFromIsa_p16 p14, 1, x0	// p16 = class
 LGetIsaDone:
 	// calls imp or objc_msgSend_uncached
 	CacheLookup NORMAL, _objc_msgSend, __objc_msgSend_uncached
@@ -607,7 +632,7 @@ LLookup_NilOrTagged:
 
 LLookup_Nil:
 	adr	x17, __objc_msgNil
-	SignAsImp x17
+	SignAsImp x17, x16
 	ret
 
 	END_ENTRY _objc_msgLookup
@@ -624,6 +649,14 @@ LLookup_Nil:
 	ret
 	
 	END_ENTRY __objc_msgNil
+
+	STATIC_ENTRY __objc_returnNil
+
+	// x0 is NOT already zero
+	mov x0, #0
+	b __objc_msgNil
+
+	END_ENTRY __objc_returnNil
 
 
 	ENTRY _objc_msgSendSuper
@@ -752,9 +785,10 @@ LGetImpMissConstant:
 	ENTRY __objc_msgForward
 
 	adrp	x17, __objc_forward_handler@PAGE
-	ldr	p17, [x17, __objc_forward_handler@PAGEOFF]
-	TailCallFunctionPointer x17
-	
+	add		x17, x17, __objc_forward_handler@PAGEOFF
+	ldr		p16, [x17]
+	TailCallSignedFunctionPointer x16, x17, 0x1c18
+
 	END_ENTRY __objc_msgForward
 	
 	
@@ -778,9 +812,24 @@ LGetImpMissConstant:
 
 	// We can directly load the IMP from big methods.
 	// x1 is method triplet instead of SEL
+#if __has_feature(ptrauth_calls)
+	mov	w17, #METHOD_SIGNING_DISCRIMINATOR
+	autdb	p1, p17
+#endif
+
+	// Strip off the kind field in the lower two bits.
+	and    p1, p1, ~0x3
+
 	add	p16, p1, #METHOD_IMP
 	ldr	p17, [x16]
 	ldr	p1, [x1, #METHOD_NAME]
+
+#if __has_feature(ptrauth_calls)
+	// Strip the selector for big signed methods. This is unnecessary for
+	// big non-signed methods, but harmless.
+	xpacd p1
+#endif
+
 	TailCallMethodListImp x17, x16
 
 L_method_invoke_small:

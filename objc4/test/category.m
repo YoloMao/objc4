@@ -119,31 +119,46 @@ static int state = 0;
 // Manually build a category that goes in __objc_catlist2.
 #if __has_feature(ptrauth_calls)
 #define SIGNED_CATEGORY_IMP "@AUTH(ia,0,addr)"
+#define SIGNED_METHOD_LIST "@AUTH(da,0xC310,addr) "
 #else
 #define SIGNED_CATEGORY_IMP
+#define SIGNED_METHOD_LIST
 #endif
+
+#if TARGET_OS_EXCLAVEKIT
+// On ExclaveKit, all method lists are signed
+#define SIGNED_OBJC_SEL "@AUTH(da,0x57c2,addr)"
+#define SIGNED_METHOD_TYPES "@AUTH(da,0xdec6,addr)"
+#else
+#define SIGNED_OBJC_SEL
+#define SIGNED_METHOD_TYPES
+#endif
+
 asm(
-"    .section __DATA,__objc_const                                       \n"
+"    .section __DATA,__objc_classname,cstring_literals                  \n"
 "L_catlist2CategoryName:                                                \n"
 "    .asciz \"Category_catlist2\"                                       \n"
+"    .section __DATA,__objc_methname,cstring_literals                   \n"
 "L_catlist2MethodString:                                                \n"
 "    .asciz \"catlist2Method\"                                          \n"
+"    .section __DATA,__objc_methtype,cstring_literals                   \n"
 "L_catlist2MethodTypes:                                                 \n"
 "    .asciz \"i16@0:8\"                                                 \n"
 
+"    .section __DATA,__objc_const                                       \n"
 "    .p2align 3                                                         \n"
 "l_OBJC_$_CATEGORY_INSTANCE_METHODS_Super_$_Category_catlist2:          \n"
 "    .long 24                                                           \n"
 "    .long 1                                                            \n"
-"    " PTR " L_catlist2MethodString                                     \n"
-"    " PTR " L_catlist2MethodTypes                                      \n"
+"    " PTR " L_catlist2MethodString" SIGNED_OBJC_SEL "                  \n"
+"    " PTR " L_catlist2MethodTypes" SIGNED_METHOD_TYPES "               \n"
 "    " PTR " _catlist2MethodImplementation" SIGNED_CATEGORY_IMP"        \n"
 
 "    .p2align 3                                                         \n"
 "l_OBJC_$_CATEGORY_Super_$_Category_catlist2:                           \n"
 "    " PTR " L_catlist2CategoryName                                     \n"
 "    " PTR " _OBJC_CLASS_$_Super                                        \n"
-"    " PTR " l_OBJC_$_CATEGORY_INSTANCE_METHODS_Super_$_Category_catlist2 \n"
+"    " PTR " l_OBJC_$_CATEGORY_INSTANCE_METHODS_Super_$_Category_catlist2" SIGNED_METHOD_LIST "\n"
 "    " PTR " 0                                                          \n"
 "    " PTR " 0                                                          \n"
 "    " PTR " 0                                                          \n"

@@ -4,7 +4,7 @@ TEST_CONFIG OS=iphoneos MEM=mrc
 TEST_BUILD
     mkdir -p $T{OBJDIR}
     /usr/sbin/dtrace -h -s $DIR/../runtime/objc-probes.d -o $T{OBJDIR}/objc-probes.h
-    $C{COMPILE} $DIR/preopt-caches.mm -std=gnu++17 -isystem $C{SDK_PATH}/System/Library/Frameworks/System.framework/PrivateHeaders -I$T{OBJDIR} -ldsc -o preopt-caches.exe
+    $C{COMPILE} $DIR/preopt-caches.mm -isystem $C{SDK_PATH}/System/Library/Frameworks/System.framework/PrivateHeaders -I$T{OBJDIR} -I$DIR/../runtime/ -ldsc -o preopt-caches.exe
 END
 */
 //
@@ -17,11 +17,10 @@ END
 #define TEST_CALLS_OPERATOR_NEW
 
 #include "test-defines.h"
-#include "../runtime/objc-private.h"
+#include "objc-private.h"
 #include <objc/objc-internal.h>
 
 #include <dlfcn.h>
-#include <dirent.h>
 #include <objc/runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +29,7 @@ END
 #include <mach-o/dyld_cache_format.h>
 #include <mach-o/dsc_iterator.h>
 #include <unordered_map>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <set>
@@ -40,6 +40,8 @@ END
 
 int validate_dylib_in_forked_process(const char * const toolPath, const char * const dylib)
 {
+    testprintf("Validating dylib %s using tool %s\n", dylib, toolPath);
+
     int out_pipe[2] = {-1};
     int err_pipe[2] = {-1};
     int exit_code = -1;
@@ -71,7 +73,7 @@ int validate_dylib_in_forked_process(const char * const toolPath, const char * c
     posix_spawn_file_actions_addclose(&actions, err_pipe[1]);
 
     // Fork so that we can dlopen the dylib in a clean context
-    ret = posix_spawnp(&pid, args[0], &actions, NULL, (char * const *)args, NULL);
+    ret = posix_spawnp(&pid, args[0], &actions, NULL, (char * const *)args, environ);
 
     if (ret != 0) {
         fail("posix_spawn for %s failed: returned %d, %s\n", dylib, ret, strerror(ret));
@@ -139,7 +141,20 @@ int validate_dylib_in_forked_process(const char * const toolPath, const char * c
         }
     }
 
-    testprintf("%s", child_stdout.c_str());
+    if (testverbose()) {
+        flockfile(stderr);
+
+        testprintf("Finished checking %s, output:\n", dylib);
+
+        std::istringstream stdoutStream(child_stdout);
+        for (std::string line; std::getline(stdoutStream, line); )
+            testprintf("stdout> %s\n", line.c_str());
+        std::istringstream stderrStream(child_stderr);
+        for (std::string line; std::getline(stderrStream, line); )
+            testprintf("stderr> %s\n", line.c_str());
+
+        funlockfile(stderr);
+    }
 
     return 0;
 }
@@ -194,13 +209,13 @@ bool check_class(Class cls, unsigned & cacheCount) {
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wcast-of-sel-type"
-        const uint8_t *selOffsetsBase = (const uint8_t*)@selector(🤯);
+        const uint8_t *selOffsetsBase = (const uint8_t*)sel_getUid("🤯");
 #pragma clang diagnostic pop
         for (unsigned i = 0 ; i < capacity ; i++) {
             uint32_t selOffset = buckets[i].sel_offs;
-            if (selOffset != 0xFFFFFFFF) {
+            if (selOffset != 0x3FFFFFF) {
                 SEL sel = (SEL)(selOffsetsBase + selOffset);
-                IMP imp = (IMP)((uint8_t*)cls - buckets[i].imp_offs);
+                IMP imp = (IMP)((uint8_t*)cls - buckets[i].imp_offset());
                 if (methods.find(sel) == methods.end()) {
                     fail("ERROR: %s: %s not found in dynamic method list\n", class_getName(cls), sel_getName(sel));
                     return false;
@@ -220,7 +235,7 @@ bool check_class(Class cls, unsigned & cacheCount) {
 
             for (unsigned i = 0 ; i < capacity ; i++) {
                 uint32_t selOffset = buckets[i].sel_offs;
-                if (selOffset != 0xFFFFFFFF) {
+                if (selOffset != 0x3FFFFFF) {
                     SEL sel = (SEL)(selOffsetsBase + selOffset);
                     testwarn("%s\n", sel_getName(sel));
                 }
@@ -248,9 +263,10 @@ bool check_library(const char *path) {
     std::set<std::string> blacklistedClasses {
         "PNPWizardScratchpadInkView", // Can only be +initialized on Pencil-capable devices
         "CACDisplayManager", // rdar://64929282 (CACDisplayManager does layout in +initialize!)
+        "HMDLegacyV4Model", // +resolveInstanceMethod that requires that somebody went through setup first to allocate a bunch of class pairs
     };
 
-    testprintf("Checking %s… ", path);
+    testprintf("Checking %s… \n", path);
 
     __unused void *lib = dlopen(path, RTLD_NOW);
     extern uint32_t _dyld_image_count(void) __OSX_AVAILABLE_STARTING(__MAC_10_1, __IPHONE_2_0);
@@ -294,56 +310,14 @@ bool check_library(const char *path) {
     return true;
 }
 
-size_t size_of_shared_cache_with_uuid(uuid_t uuid) {
-  DIR* dfd = opendir(IPHONE_DYLD_SHARED_CACHE_DIR);
-  if (!dfd) {
-    fail("Error: unable to open shared cache dir %s\n",
-            IPHONE_DYLD_SHARED_CACHE_DIR);
-    exit(1);
-  }
-
-  uint64_t shared_cache_size = 0;
-
-  struct dirent *dp;
-  while ((dp = readdir(dfd))) {
-    char full_filename[512];
-    snprintf(full_filename, sizeof(full_filename), "%s%s",
-             IPHONE_DYLD_SHARED_CACHE_DIR, dp->d_name);
-
-    struct stat stat_buf;
-    if (stat(full_filename, &stat_buf) != 0)
-      continue;
-
-    if ((stat_buf.st_mode & S_IFMT) == S_IFDIR)
-      continue;
-
-    int fd = open(full_filename, O_RDONLY);
-    if (fd < 0) {
-      fprintf(stderr, "Error: unable to open file %s\n", full_filename);
-      continue;
-    }
-
-    struct dyld_cache_header header;
-    if (read(fd, &header, sizeof(header)) != sizeof(header)) {
-      fprintf(stderr, "Error: unable to read dyld shared cache header from %s\n",
-              full_filename);
-      close(fd);
-      continue;
-    }
-
-    if (uuid_compare(header.uuid, uuid) == 0) {
-      shared_cache_size = stat_buf.st_size;
-      break;
-    }
-  }
-
-  closedir(dfd);
-
-  return shared_cache_size;
-}
-
 int main (int argc, const char * argv[])
 {
+    std::set<std::string> blacklistedLibraries {
+        "/System/Library/Health/FeedItemPlugins/Summaries.healthplugin/Summaries",
+        // Crashes the Swift runtime on realization: rdar://76149282 (Crash realising classes after dlopening /System/Library/Health/FeedItemPlugins/Summaries.healthplugin/Summaries)
+        "/System/Library/PrivateFrameworks/Memories.framework/Memories" // rdar://76150151 (dlopen /System/Library/PrivateFrameworks/Memories.framework/Memories hangs)
+    };
+
     if (argc == 1) {
         int err = 0;
         dyld_process_info process_info = _dyld_process_info_create(mach_task_self(), 0, &err);
@@ -356,17 +330,20 @@ int main (int argc, const char * argv[])
         _dyld_process_info_get_cache(process_info, &cache_info);
 
         __block std::set<std::string> dylibsSet;
-        size_t size = size_of_shared_cache_with_uuid(cache_info.cacheUUID);
-        dyld_shared_cache_iterate((void*)cache_info.cacheBaseAddress, (uint32_t)size, ^(const dyld_shared_cache_dylib_info* dylibInfo, __unused const dyld_shared_cache_segment_info* segInfo) {
-            if (dylibInfo->isAlias) return;
-            std::string path(dylibInfo->path);
-            dylibsSet.insert(path);
+        int iterationResult = dyld_shared_cache_iterate_text(cache_info.cacheUUID, ^(const dyld_shared_cache_dylib_text_info *info) {
+            std::string path(info->path);
+            if (blacklistedLibraries.find(path) == blacklistedLibraries.end()) {
+                testprintf("Discovered library %s\n", info->path);
+                dylibsSet.insert(path);
+            }
         });
+        testassertequal(iterationResult, 0);
         std::vector<std::string> dylibs(dylibsSet.begin(), dylibsSet.end());
 
         dispatch_apply(dylibs.size(), DISPATCH_APPLY_AUTO, ^(size_t idx) {
             validate_dylib_in_forked_process(argv[0], dylibs[idx].c_str());
         });
+        succeed(__FILE__);
     } else {
         const char *libraryName = argv[1];
         if (!check_library(libraryName)) {
@@ -375,6 +352,5 @@ int main (int argc, const char * argv[])
         }
     }
 
-    succeed(__FILE__);
     return 0;
 }

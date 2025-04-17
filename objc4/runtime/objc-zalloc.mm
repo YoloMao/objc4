@@ -47,7 +47,7 @@ void *AtomicQueue::pop()
         }
         l2.head = l1.head->next;
         l2.gen  = l1.gen + 1;
-    } while (!atomic_pair.compare_exchange_weak(l1.pair, l2.pair, relaxed, relaxed));
+    } while (!atomicPair()->compare_exchange_weak(l1.pair, l2.pair, relaxed, relaxed));
 
     return reinterpret_cast<void *>(l1.head);
 }
@@ -63,7 +63,7 @@ void AtomicQueue::push_list(void *_head, void *_tail)
         tail->next = l1.head;
         l2.head = head;
         l2.gen = l1.gen + 1;
-    } while (!atomic_pair.compare_exchange_weak(l1.pair, l2.pair, release, relaxed));
+    } while (!atomicPair()->compare_exchange_weak(l1.pair, l2.pair, release, relaxed));
 }
 
 template<class T>
@@ -98,7 +98,7 @@ T *Zone<T, false>::alloc()
 {
     void *e = _freelist.pop();
     if (e) {
-        __builtin_bzero(e, sizeof(void *));
+        memset(e, 0, sizeof(void *));
         return reinterpret_cast<T *>(e);
     }
     return alloc_slow();
@@ -109,17 +109,15 @@ void Zone<T, false>::free(T *ptr)
 {
     if (ptr) {
         Element *e = reinterpret_cast<Element *>(ptr);
-        __builtin_bzero(e->buf, sizeof(e->buf));
+        memset(e->buf, 0, sizeof(e->buf));
         _freelist.push(e);
     }
 }
 
-#if __OBJC2__
 #define ZoneInstantiate(type) \
 	template class Zone<type, sizeof(type) % MALLOC_ALIGNMENT == 0>
 
 ZoneInstantiate(class_rw_t);
 ZoneInstantiate(class_rw_ext_t);
-#endif
 
 }

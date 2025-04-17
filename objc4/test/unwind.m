@@ -1,8 +1,9 @@
 // TEST_CONFIG
+// TEST_ENV OBJC_DEBUG_POOL_DEPTH=-1
 
 #include "test.h"
 #include <objc/objc-exception.h>
-#include <Foundation/NSObject.h>
+#include <objc/NSObject.h>
 
 static int state;
 
@@ -30,10 +31,12 @@ static void handler(id unused __unused, void *ctx __unused)
 
 +(BOOL) resolveClassMethod:(SEL)__unused name
 {
-    testassert(state == 1); state++;
-#if TARGET_OS_OSX
+    testassertequal(state, 1); state++;
+#if TARGET_OS_EXCLAVEKIT
+    state++;  // handler would have done this
+#elif TARGET_OS_OSX
     objc_addExceptionHandler(&handler, 0);
-    testassert(state == 2); 
+    testassertequal(state, 2); 
 #else
     state++;  // handler would have done this
 #endif
@@ -51,30 +54,34 @@ int main()
 
     PUSH_POOL {
 
+#if TARGET_OS_EXCLAVEKIT
+        const int count = 256;
+#else
         const int count = is_guardmalloc() ? 1000 : 100000;
+#endif
         state = 0;
         for (int i = 0; i < count; i++) {
             @try {
-                testassert(state == 0); state++;
+                testassertequal(state, 0); state++;
                 [Foo method];
-                testassert(0);
+                testunreachable();
             } @catch (Bar *e) {
-                testassert(0);
+                testunreachable();
             } @catch (Foo *e) {
-                testassert(e == exc);
-                testassert(state == 4); state++;
-                testassert(state == 5); [e check];  // state++
+                testassertequal(e, exc);
+                testassertequal(state, 4); state++;
+                testassertequal(state, 5); [e check];  // state++
                 RELEASE_VAR(exc);
             } @catch (id e) {
-                testassert(0);
+                testunreachable();
             } @catch (...) {
-                testassert(0);
+                testunreachable();
             } @finally {
-                testassert(state == 6); state++;
+                testassertequal(state, 6); state++;
             }
-            testassert(state == 7); state = 0;
+            testassertequal(state, 7); state = 0;
         }
-        
+
     } POP_POOL;
 
     succeed(__FILE__);

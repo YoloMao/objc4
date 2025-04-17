@@ -21,13 +21,10 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#if __OBJC2__
-
 #include "objc-private.h"
 #include "DenseMapExtras.h"
 
 static objc::ExplicitInitDenseSet<const char *> namedSelectors;
-static SEL search_builtins(const char *key);
 
 
 /***********************************************************************
@@ -55,8 +52,8 @@ void sel_init(size_t selrefCount)
 
 static SEL sel_alloc(const char *name, bool copy)
 {
-    selLock.assertLocked();
-    return (SEL)(copy ? strdupIfMutable(name) : name);    
+    lockdebug::assert_locked(&selLock.get());
+    return (SEL)(copy ? strdupIfMutable(name) : name);
 }
 
 
@@ -83,7 +80,7 @@ BOOL sel_isMapped(SEL sel)
 
     const char *name = (const char *)(void *)sel;
 
-    if (sel == search_builtins(name)) return YES;
+    if (sel == _sel_searchBuiltins(name)) return YES;
 
     mutex_locker_t lock(selLock);
     auto it = namedSelectors.get().find(name);
@@ -91,7 +88,7 @@ BOOL sel_isMapped(SEL sel)
 }
 
 
-static SEL search_builtins(const char *name) 
+SEL _sel_searchBuiltins(const char *name)
 {
 #if SUPPORT_PREOPT
   if (SEL result = (SEL)_dyld_get_objc_selector(name))
@@ -105,12 +102,12 @@ static SEL __sel_registerName(const char *name, bool shouldLock, bool copy)
 {
     SEL result = 0;
 
-    if (shouldLock) selLock.assertUnlocked();
-    else selLock.assertLocked();
+    if (shouldLock) lockdebug::assert_unlocked(&selLock.get());
+    else            lockdebug::assert_locked(&selLock.get());
 
     if (!name) return (SEL)0;
 
-    result = search_builtins(name);
+    result = _sel_searchBuiltins(name);
     if (result) return result;
     
     conditional_mutex_locker_t lock(selLock, shouldLock);
@@ -140,11 +137,21 @@ SEL sel_getUid(const char *name) {
     return __sel_registerName(name, 2, 1);  // YES lock, YES copy
 }
 
+SEL sel_lookUpByName(const char *name) {
+    if (!name) return (SEL)0;
+
+    SEL result = _sel_searchBuiltins(name);
+    if (result) return result;
+
+    mutex_locker_t lock(selLock);
+    auto it = namedSelectors.get().find(name);
+    if (it == namedSelectors.get().end()) {
+        return (SEL)0;
+    }
+    return (SEL)*it;
+}
 
 BOOL sel_isEqual(SEL lhs, SEL rhs)
 {
     return bool(lhs == rhs);
 }
-
-
-#endif

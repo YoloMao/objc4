@@ -35,17 +35,18 @@
 
 // Define SUPPORT_GC_COMPAT=1 to enable compatibility where GC once was.
 // OBJC_NO_GC and OBJC_NO_GC_API in objc-api.h mean something else.
-#if !TARGET_OS_OSX
+#if TARGET_OS_EXCLAVEKIT
+#   define SUPPORT_GC_COMPAT 0
+#elif !TARGET_OS_OSX
 #   define SUPPORT_GC_COMPAT 0
 #else
 #   define SUPPORT_GC_COMPAT 1
 #endif
 
-// Define SUPPORT_ZONES=1 to enable malloc zone support in NXHashTable.
-#if !(TARGET_OS_OSX || TARGET_OS_MACCATALYST)
-#   define SUPPORT_ZONES 0
-#else
+#if TARGET_OS_OSX || TARGET_OS_MACCATALYST
 #   define SUPPORT_ZONES 1
+#else
+#   define SUPPORT_ZONES 0
 #endif
 
 // Define SUPPORT_MOD=1 to use the mod operator in NXHashTable and objc-sel-set
@@ -56,10 +57,10 @@
 #endif
 
 // Define SUPPORT_PREOPT=1 to enable dyld shared cache optimizations
-#if TARGET_OS_WIN32
-#   define SUPPORT_PREOPT 0
-#else
+#if !TARGET_OS_EXCLAVEKIT
 #   define SUPPORT_PREOPT 1
+#else
+#   define SUPPORT_PREOPT 0
 #endif
 
 // Define SUPPORT_TAGGED_POINTERS=1 to enable tagged pointer objects
@@ -91,7 +92,7 @@
 
 // Define SUPPORT_PACKED_ISA=1 on platforms that store the class in the isa 
 // field as a maskable pointer with other data around it.
-#if (!__LP64__  ||  TARGET_OS_WIN32  ||  \
+#if (!__LP64__  ||  \
      (TARGET_OS_SIMULATOR && !TARGET_OS_MACCATALYST && !__arm64__))
 #   define SUPPORT_PACKED_ISA 0
 #else
@@ -133,11 +134,7 @@
 #endif
 
 // Define SUPPORT_RETURN_AUTORELEASE to optimize autoreleased return values
-#if TARGET_OS_WIN32
-#   define SUPPORT_RETURN_AUTORELEASE 0
-#else
 #   define SUPPORT_RETURN_AUTORELEASE 1
-#endif
 
 // Define SUPPORT_STRET on architectures that need separate struct-return ABI.
 #if defined(__arm64__)
@@ -147,7 +144,9 @@
 #endif
 
 // Define SUPPORT_MESSAGE_LOGGING to enable NSObjCMessageLoggingEnabled
-#if !TARGET_OS_OSX
+#if TARGET_OS_EXCLAVEKIT
+#   define SUPPORT_MESSAGE_LOGGING 0
+#elif !TARGET_OS_OSX
 #   define SUPPORT_MESSAGE_LOGGING 0
 #else
 #   define SUPPORT_MESSAGE_LOGGING 1
@@ -162,10 +161,22 @@
 
 // Define HAVE_TASK_RESTARTABLE_RANGES to enable usage of
 // task_restartable_ranges_synchronize()
-#if TARGET_OS_SIMULATOR || defined(__i386__) || defined(__arm__) || !TARGET_OS_MAC
+#if TARGET_OS_EXCLAVEKIT
+#   define HAVE_TASK_RESTARTABLE_RANGES 0
+#elif TARGET_OS_SIMULATOR || defined(__i386__) || defined(__arm__) || !TARGET_OS_MAC
 #   define HAVE_TASK_RESTARTABLE_RANGES 0
 #else
 #   define HAVE_TASK_RESTARTABLE_RANGES 1
+#endif
+
+// Define HAS_RETURNADDR_AUTORELEASE_ELISION where we support autorelease
+// elision based on comparing the return address of the call and claim. When 0,
+// we only support the older scheme that inspects the caller's code for a claim
+// call or sentinel NOP.
+#if __arm64__
+#   define HAS_RETURNADDR_AUTORELEASE_ELISION 1
+#else
+#   define HAS_RETURNADDR_AUTORELEASE_ELISION 0
 #endif
 
 // OBJC_INSTRUMENTED controls whether message dispatching is dynamically
@@ -205,7 +216,9 @@
 #define CACHE_MASK_STORAGE_HIGH_16_BIG_ADDRS 4
 
 #if defined(__arm64__) && __LP64__
-#if TARGET_OS_OSX || TARGET_OS_SIMULATOR
+#if TARGET_OS_EXCLAVEKIT
+#define CACHE_MASK_STORAGE CACHE_MASK_STORAGE_HIGH_16_BIG_ADDRS
+#elif TARGET_OS_OSX || TARGET_OS_SIMULATOR
 #define CACHE_MASK_STORAGE CACHE_MASK_STORAGE_HIGH_16_BIG_ADDRS
 #else
 #define CACHE_MASK_STORAGE CACHE_MASK_STORAGE_HIGH_16
@@ -218,8 +231,12 @@
 
 // Constants used for signing/authing isas. This doesn't quite belong
 // here, but the asm files can't import other headers.
-#define ISA_SIGNING_DISCRIMINATOR 0x6AE1
-#define ISA_SIGNING_DISCRIMINATOR_CLASS_SUPERCLASS 0xB5AB
+#define ISA_SIGNING_DISCRIMINATOR 0x6AE1 // ptrauth_string_discriminator("isa")
+#define ISA_SIGNING_DISCRIMINATOR_CLASS_SUPERCLASS 0xB5AB // ptrauth_string_discriminator("objc_class:superclass")
+#define METHOD_SIGNING_DISCRIMINATOR 0xC1AB // ptrauth_string_discriminator("method_t")
+#if __has_feature(ptrauth_function_pointer_type_discrimination)
+#define IMP_SIGNING_DISCRIMINATOR 0x4A27
+#endif
 
 #define ISA_SIGNING_KEY ptrauth_key_process_independent_data
 
@@ -227,7 +244,6 @@
 // of these to choose how ISAs are authenticated.
 #define ISA_SIGNING_STRIP 1 // Strip the signature whenever reading an ISA.
 #define ISA_SIGNING_AUTH  2 // Authenticate the signature on all ISAs.
-
 
 // ISA signing modes. Set ISA_SIGNING_SIGN_MODE to one of these to
 // choose how ISAs are signed.
@@ -261,10 +277,33 @@
 // not loaded, and cause uses of the class to resolve to Nil.
 #define SUPERCLASS_SIGNING_TREAT_UNSIGNED_AS_NIL 0
 
-#if defined(__arm64__) && TARGET_OS_IOS && !TARGET_OS_SIMULATOR && !TARGET_OS_MACCATALYST
+// Discriminator for signing classes is the tagged pointer class tables. As
+// above, this doesn't quite belong, but needs to be here so the asm files can
+// access it.
+#define TAGGED_POINTER_TABLE_ENTRY_DISCRIMINATOR 0x8F9D // hash of "objc_taggedpointer_table"
+
+// Constants for signing the "bits" field in classes
+
+// ... when it's a class_rw_t pointer (*not* including flags)
+#define CLASS_DATA_BITS_RW_SIGNING_KEY   ptrauth_key_process_dependent_data
+#define CLASS_DATA_BITS_RW_DISCRIMINATOR 0xc93a // "class_data_bits_rw"
+
+// ... when it's a class_ro_t pointer (*including* flags)
+#define CLASS_DATA_BITS_RO_SIGNING_KEY   ptrauth_key_process_independent_data
+#define CLASS_DATA_BITS_RO_DISCRIMINATOR 0x61f8 // "class_data_bits"
+
+// Be sure to edit the equivalent define in objc-internal.h as well.
+// Be sure to not enable CONFIG_USE_PREOPT_CACHES if CACHE_MASK_STORAGE != CACHE_MASK_STORAGE_HIGH_16
+#ifndef CONFIG_USE_PREOPT_CACHES
+#if TARGET_OS_EXCLAVEKIT
+#define CONFIG_USE_PREOPT_CACHES 0
+#elif TARGET_OS_OSX || TARGET_OS_MACCATALYST || TARGET_OS_SIMULATOR
+#define CONFIG_USE_PREOPT_CACHES 0
+#elif defined(__arm64__) && __LP64__
 #define CONFIG_USE_PREOPT_CACHES 1
 #else
 #define CONFIG_USE_PREOPT_CACHES 0
+#endif
 #endif
 
 // When set to 1, small methods in the shared cache have a direct
@@ -272,5 +311,59 @@
 // cache have the same format as other small methods, with an offset
 // to a selref.
 #define CONFIG_SHARED_CACHE_RELATIVE_DIRECT_SELECTORS 1
+
+#if TARGET_OS_EXCLAVEKIT
+#define HAVE_CLOCK_GETTIME_NSEC_NP 0
+#elif TARGET_OS_MAC
+#define HAVE_CLOCK_GETTIME_NSEC_NP 1
+#else
+#define HAVE_CLOCK_GETTIME_NSEC_NP 0
+#endif
+
+#if TARGET_OS_EXCLAVEKIT
+#define HAVE_ASPRINTF   1
+#elif TARGET_OS_MAC
+#define HAVE_ASPRINTF   1
+#else
+#define HAVE_ASPRINTF   0
+#endif
+
+// Threading package support
+#define OBJC_THREADING_NONE         0   // single threaded
+#define OBJC_THREADING_DARWIN       1   // pthreads + os_unfair_lock + direct TSD
+#define OBJC_THREADING_PTHREADS     2   // pure pthreads
+#define OBJC_THREADING_C11THREADS   3   // C11 threads
+#if TARGET_OS_EXCLAVEKIT
+#define OBJC_THREADING_EXCLAVEKIT   4   // C11 threads + direct TSD
+#endif
+
+#if TARGET_OS_EXCLAVEKIT
+// TODO: change this to OBJC_THREADING_EXCLAVEKIT once we have the necessary
+//       extensions <rdar://90479081>
+#   define OBJC_THREADING_PACKAGE OBJC_THREADING_C11THREADS
+#elif TARGET_OS_MAC
+#   define OBJC_THREADING_PACKAGE OBJC_THREADING_DARWIN
+#elif __has_include(<threads.h>)
+#   define OBJC_THREADING_PACKAGE  OBJC_THREADING_C11THREADS
+#elif __has_include(<pthread.h>)
+#   define OBJC_THREADING_PACKAGE  OBJC_THREADING_PTHREADS
+#else
+#   define OBJC_THREADING_PACKAGE  OBJC_THREADING_NONE
+#endif
+
+// Check whether the compiler supports thread_local
+#if TARGET_OS_EXCLAVEKIT
+#define SUPPORT_THREAD_LOCAL 0
+#elif __cplusplus >= 201103L
+#define SUPPORT_THREAD_LOCAL 1
+#elif defined(__GCC__) || defined(__CLANG__)
+#define thread_local __thread
+#define SUPPORT_THREAD_LOCAL 1
+#elif defined(__MSC_VER)
+#define thread_local __declspec(thread)
+#define SUPPORT_THREAD_LOCAL 1
+#else
+#define SUPPORT_THREAD_LOCAL 0
+#endif
 
 #endif
