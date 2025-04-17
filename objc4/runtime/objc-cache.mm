@@ -83,8 +83,8 @@
 
 #if TARGET_OS_OSX
 #   if !TARGET_OS_EXCLAVEKIT
-#include <Cambria/Traps.h>
-#include <Cambria/Cambria.h>
+//#include <Cambria/Traps.h>
+//#include <Cambria/Cambria.h>
 #   endif
 #endif
 
@@ -1184,18 +1184,18 @@ static int _collecting_in_critical(void)
             continue;
 
         // Find out where thread is executing
-#if TARGET_OS_OSX
-        if (oah_is_current_process_translated()) {
-            kern_return_t ret = objc_thread_get_rip(threads[count], (uint64_t*)&pc);
-            if (ret != KERN_SUCCESS) {
-                pc = PC_SENTINEL;
-            }
-        } else {
+//#if TARGET_OS_OSX
+//        if (oah_is_current_process_translated()) {
+//            kern_return_t ret = objc_thread_get_rip(threads[count], (uint64_t*)&pc);
+//            if (ret != KERN_SUCCESS) {
+//                pc = PC_SENTINEL;
+//            }
+//        } else {
             pc = _get_pc_for_thread (threads[count]);
-        }
-#else
-        pc = _get_pc_for_thread (threads[count]);
-#endif
+//        }
+//#else
+//        pc = _get_pc_for_thread (threads[count]);
+//#endif
 
         // Check for bad status, and if so, assume the worse (can't collect)
         if (pc == PC_SENTINEL)

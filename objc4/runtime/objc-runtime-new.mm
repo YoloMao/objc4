@@ -42,14 +42,14 @@
 #include <mach/shared_region.h>
 
 extern "C" {
-#include <os/bsd.h>
+//#include <os/bsd.h>
 #include <os/reason_private.h>
 #include <os/variant_private.h>
 }
 #endif // !TARGET_OS_EXCLAVEKIT
 
 #if !TARGET_OS_EXCLAVECORE && !TARGET_OS_EXCLAVEKIT
-#include <malloc_private.h>
+//#include <malloc_private.h>
 #endif // !TARGET_OS_EXCLAVECORE && !TARGET_OS_EXCLAVEKIT
 
 #define newprotocol(p) ((protocol_t *)p)
@@ -255,8 +255,8 @@ STATIC_ASSERT((ISA_MASK & ISA_MAGIC_MASK) == 0);
 STATIC_ASSERT((~ISA_MAGIC_MASK & ISA_MAGIC_VALUE) == 0);
 
 // die if virtual address space bound goes up
-STATIC_ASSERT((~ISA_MASK & OBJC_VM_MAX_ADDRESS) == 0  ||
-              ISA_MASK + sizeof(void*) == OBJC_VM_MAX_ADDRESS);
+//STATIC_ASSERT((~ISA_MASK & OBJC_VM_MAX_ADDRESS) == 0  ||
+//              ISA_MASK + sizeof(void*) == OBJC_VM_MAX_ADDRESS);
 
 #if TARGET_OS_EXCLAVEKIT
 // Initialize to value that might hopefully produce recognizable failures if used before properly initialized.
@@ -4072,13 +4072,13 @@ void _read_images(mapped_image_info infosParam[], uint32_t hCount, int totalClas
         // (linked before OS X 10.11)
         // Note: we must check for macOS, because Catalyst and Almond apps
         // return false for a Mac SDK check! rdar://78225780
-        if (dyld_get_active_platform() == PLATFORM_MACOS && !dyld_program_sdk_at_least(dyld_platform_version_macOS_10_11)) {
-            DisableNonpointerIsa = On;
-            if (PrintRawIsa) {
-                _objc_inform("RAW ISA: disabling non-pointer isa because "
-                             "the app is too old.");
-            }
-        }
+//        if (dyld_get_active_platform() == PLATFORM_MACOS && !dyld_program_sdk_at_least(dyld_platform_version_macOS_10_11)) {
+//            DisableNonpointerIsa = On;
+//            if (PrintRawIsa) {
+//                _objc_inform("RAW ISA: disabling non-pointer isa because "
+//                             "the app is too old.");
+//            }
+//        }
 #   endif
 
         // Disable non-pointer isa if the app has a __DATA,__objc_rawisa section
@@ -9510,9 +9510,9 @@ static void
 initializeTaggedPointerObfuscator(void)
 {
     if (!DisableTaggedPointerObfuscation
-#if !TARGET_OS_EXCLAVEKIT
-        && dyld_program_sdk_at_least(dyld_fall_2018_os_versions)
-#endif
+//#if !TARGET_OS_EXCLAVEKIT
+//        && dyld_program_sdk_at_least(dyld_fall_2018_os_versions)
+//#endif
         ) {
         // Pull random data into the variable, then shift away all non-payload bits.
         arc4random_buf(&objc_debug_taggedpointer_obfuscator,

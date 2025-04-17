@@ -159,7 +159,7 @@ static inline uintptr_t mask16ShiftBits(uint16_t mask)
 #   include <mach-o/ldsyms.h>
 #   include <os/lock_private.h>
 #   include <libkern/OSCacheControl.h>
-#   include <System/pthread_machdep.h>
+//#   include <System/pthread_machdep.h>
 #endif // !TARGET_OS_EXCLAVEKIT
 
 #   include "objc-probes.h"  // generated dtrace probe definitions.
