@@ -21,20 +21,21 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#ifndef _QOS_SYS_PRIVATE_H
-#define _QOS_SYS_PRIVATE_H
-
-/*! 
- * @constant QOS_CLASS_MAINTENANCE
- * @abstract A QOS class which indicates work performed by this thread was not
- * initiated by the user and that the user may be unaware of the results.
- * @discussion Such work is requested to run at a priority far below other work
- * including significant I/O throttling. The use of this QOS class indicates
- * the work should be run in the most energy and thermally-efficient manner
- * possible, and may be deferred for a long time in order to preserve
- * system responsiveness for the user.
- * This is SPI for use by Spotlight and Time Machine only.
- */
-#define QOS_CLASS_MAINTENANCE	((qos_class_t)0x05)
-
-#endif //_QOS_SYS_PRIVATE_H
+ #ifndef _QOS_SYS_PRIVATE_H
+ #define _QOS_SYS_PRIVATE_H
+ 
+ /*! 
+  * @constant QOS_CLASS_MAINTENANCE
+  * @abstract A QOS class which indicates work performed by this thread was not
+  * initiated by the user and that the user may be unaware of the results.
+  * @discussion Such work is requested to run at a priority far below other work
+  * including significant I/O throttling. The use of this QOS class indicates
+  * the work should be run in the most energy and thermally-efficient manner
+  * possible, and may be deferred for a long time in order to preserve
+  * system responsiveness for the user.
+  * This is SPI for use by Spotlight and Time Machine only.
+  */
+ #define QOS_CLASS_MAINTENANCE	((qos_class_t)0x05)
+ 
+ #endif //_QOS_SYS_PRIVATE_H
+ 
