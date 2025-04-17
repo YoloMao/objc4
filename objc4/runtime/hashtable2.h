@@ -42,6 +42,27 @@
 
 __BEGIN_DECLS
 
+#if __has_feature(ptrauth_calls)
+#include <ptrauth.h>
+#define NXHashTable_ptrauth_prototype \
+    __ptrauth(ptrauth_key_process_independent_data, 1, \
+    ptrauth_string_discriminator("NXHashTable::prototype"))
+#define NXHashTable_ptrauth_hash \
+    __ptrauth(ptrauth_key_process_independent_code, 1, \
+    ptrauth_string_discriminator("NXHashTablePrototype::hash"))
+#define NXHashTable_ptrauth_isEqual \
+    __ptrauth(ptrauth_key_process_independent_code, 1, \
+    ptrauth_string_discriminator("NXHashTablePrototype::isEqual"))
+#define NXHashTable_ptrauth_free \
+    __ptrauth(ptrauth_key_process_independent_code, 1, \
+    ptrauth_string_discriminator("NXHashTablePrototype::free"))
+#else
+#define NXHashTable_ptrauth_prototype
+#define NXHashTable_ptrauth_hash
+#define NXHashTable_ptrauth_isEqual
+#define NXHashTable_ptrauth_free
+#endif
+
 /*************************************************************************
  *	Hash tables of arbitrary data
  *************************************************************************/
@@ -51,13 +72,13 @@ The objective C class HashTable is preferred when dealing with (key, values) ass
 As well-behaved scalable data structures, hash tables double in size when they start becoming full, thus guaranteeing both average constant time access and linear size. */
 
 typedef struct {
-    uintptr_t	(* _Nonnull hash)(const void * _Nullable info,
-                                  const void * _Nullable data);
-    int		(* _Nonnull isEqual)(const void * _Nullable info,
-                                     const void * _Nullable data1,
-                                     const void * _Nullable data2);
-    void	(* _Nonnull free)(const void * _Nullable info,
-                                  void * _Nullable data);
+    uintptr_t	(* NXHashTable_ptrauth_hash _Nonnull hash)(const void * _Nullable info,
+                                                           const void * _Nullable data);
+    int		(* NXHashTable_ptrauth_isEqual _Nonnull isEqual)(const void * _Nullable info,
+                                                             const void * _Nullable data1,
+                                                             const void * _Nullable data2);
+    void	(* NXHashTable_ptrauth_free _Nonnull free)(const void * _Nullable info,
+                                                       void * _Nullable data);
     int		style; /* reserved for future expansion; currently 0 */
     } NXHashTablePrototype;
     
@@ -70,7 +91,7 @@ typedef struct {
  */
 
 typedef struct {
-    const NXHashTablePrototype	* _Nonnull prototype OBJC_HASH_AVAILABILITY;
+    const NXHashTablePrototype	* NXHashTable_ptrauth_prototype _Nonnull prototype OBJC_HASH_AVAILABILITY;
     unsigned			count OBJC_HASH_AVAILABILITY;
     unsigned			nbBuckets OBJC_HASH_AVAILABILITY;
     void			* _Nullable buckets OBJC_HASH_AVAILABILITY;
@@ -80,7 +101,7 @@ typedef struct {
     
 OBJC_EXPORT NXHashTable * _Nonnull
 NXCreateHashTableFromZone (NXHashTablePrototype prototype, unsigned capacity,
-                           const void * _Nullable info, void * _Nullable z)
+                           const void * _Nullable info, void * _Nullable zone __unused)
     OBJC_HASH_AVAILABILITY;
 
 OBJC_EXPORT NXHashTable * _Nonnull
@@ -244,56 +265,6 @@ OBJC_EXPORT const NXHashTablePrototype NXPtrStructKeyPrototype
     OBJC_HASH_AVAILABILITY;
 OBJC_EXPORT const NXHashTablePrototype NXStrStructKeyPrototype
     OBJC_HASH_AVAILABILITY;
-
-
-#if !__OBJC2__  &&  !TARGET_OS_WIN32
-
-/*************************************************************************
- *	Unique strings and buffers
- *************************************************************************/
-
-/* Unique strings allows C users to enjoy the benefits of Lisp's atoms:
-A unique string is a string that is allocated once for all (never de-allocated) and that has only one representant (thus allowing comparison with == instead of strcmp).  A unique string should never be modified (and in fact some memory protection is done to ensure that).  In order to more explicitly insist on the fact that the string has been uniqued, a synonym of (const char *) has been added, NXAtom. */
-
-typedef const char *NXAtom OBJC_HASH_AVAILABILITY;
-
-OBJC_EXPORT NXAtom _Nullable
-NXUniqueString(const char * _Nullable buffer)
-    OBJC_HASH_AVAILABILITY;
-    /* assumes that buffer is \0 terminated, and returns
-     a previously created string or a new string that is a copy of buffer.
-    If NULL is passed returns NULL.
-    Returned string should never be modified.  To ensure this invariant,
-    allocations are made in a special read only zone. */
-	
-OBJC_EXPORT NXAtom _Nonnull
-NXUniqueStringWithLength(const char * _Nullable buffer, int length)
-    OBJC_HASH_AVAILABILITY;
-    /* assumes that buffer is a non NULL buffer of at least 
-    length characters.  Returns a previously created string or 
-    a new string that is a copy of buffer. 
-    If buffer contains \0, string will be truncated.
-    As for NXUniqueString, returned string should never be modified.  */
-	
-OBJC_EXPORT NXAtom _Nullable
-NXUniqueStringNoCopy(const char * _Nullable string)
-    OBJC_HASH_AVAILABILITY;
-    /* If there is already a unique string equal to string, returns the original.  
-    Otherwise, string is entered in the table, without making a copy.  Argument should then never be modified.  */
-	
-OBJC_EXPORT char * _Nullable
-NXCopyStringBuffer(const char * _Nullable buffer)
-    OBJC_HASH_AVAILABILITY;
-    /* given a buffer, allocates a new string copy of buffer.  
-    Buffer should be \0 terminated; returned string is \0 terminated. */
-
-OBJC_EXPORT char * _Nullable
-NXCopyStringBufferFromZone(const char * _Nullable buffer, void * _Nullable z)
-    OBJC_HASH_AVAILABILITY;
-    /* given a buffer, allocates a new string copy of buffer.  
-    Buffer should be \0 terminated; returned string is \0 terminated. */
-
-#endif
 
 __END_DECLS
 

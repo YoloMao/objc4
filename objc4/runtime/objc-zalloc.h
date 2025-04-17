@@ -60,9 +60,14 @@ class AtomicQueue {
             Entry        *head;
             unsigned long gen;
         };
-        std::atomic<pair_t> atomic_pair;
-        pair_t pair;
+        pair_t pair = 0;
     };
+
+    // Can't place the atomic in the union, or we end up needing a constructor
+    // which makes _freelist need a static initializer.
+    explicit_atomic<pair_t> *atomicPair() {
+        return explicit_atomic<pair_t>::from_pointer(&pair);
+    }
 
 public:
     void *pop();

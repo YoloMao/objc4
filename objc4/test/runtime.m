@@ -1,9 +1,5 @@
-/* 
-TEST_BUILD_OUTPUT
-.*runtime.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-.*runtime.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-.*runtime.m:\d+:\d+: warning: null passed to a callee that requires a non-null argument \[-Wnonnull\](\n.* note: expanded from macro 'testassert')?
-END
+/*
+TEST_CFLAGS -Wno-nonnull
 
 TEST_RUN_OUTPUT
 objc\[\d+\]: class `SwiftV1Class\' not linked into application
@@ -20,7 +16,13 @@ END
 #include "testroot.i"
 #include <string.h>
 #include <dlfcn.h>
+
+#if TARGET_OS_EXCLAVEKIT
+extern const struct mach_header_64 _mh_execute_header;
+#else
 #include <mach-o/ldsyms.h>
+#endif
+
 #include <objc/objc-runtime.h>
 
 #if __has_feature(objc_arc)
@@ -63,6 +65,17 @@ __attribute__((objc_runtime_name(SwiftV1MangledName4)))
 @interface SwiftV1Class4 : TestRoot @end
 @implementation SwiftV1Class4 @end
 
+void setSwiftFlag(Class cls) {
+    uintptr_t *pbits = &((uintptr_t *)cls)[4];
+    uintptr_t newVal
+        = (uintptr_t)ptrauth_strip((void *)*pbits,
+                                   ptrauth_key_process_dependent_data) | 2;
+    *pbits
+        = (uintptr_t)ptrauth_sign_unauthenticated((void *)newVal,
+                                                  ptrauth_key_process_dependent_data,
+                                                  ptrauth_blend_discriminator(pbits,
+                                                                              0xc93a));
+}
 
 int main()
 {
@@ -127,12 +140,19 @@ int main()
     testassert(list[count0-1] == NULL);
     testassert(count == count0);
 
+    size_t trylockCount;
+    do {
+        trylockCount = _objc_getRealizedClassList_trylock(list, count0-1);
+    } while (trylockCount == SIZE_MAX);
+    testassert(list[trylockCount-1] == NULL);
+    testassert(count == trylockCount);
+
     // So that demangling works, fake what would have happened with Swift
     // and force the "Swift" bit on the class
-    ((uintptr_t *)objc_getClass(SwiftV1MangledName))[4] |= 2;
-    ((uintptr_t *)objc_getClass(SwiftV1MangledName2))[4] |= 2;
-    ((uintptr_t *)objc_getClass(SwiftV1MangledName3))[4] |= 2;
-    ((uintptr_t *)objc_getClass(SwiftV1MangledName4))[4] |= 2;
+    setSwiftFlag(objc_getClass(SwiftV1MangledName));
+    setSwiftFlag(objc_getClass(SwiftV1MangledName2));
+    setSwiftFlag(objc_getClass(SwiftV1MangledName3));
+    setSwiftFlag(objc_getClass(SwiftV1MangledName4));
 
     count = objc_getClassList(list, count0);
     testassert(count == count0);

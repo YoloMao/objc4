@@ -1,10 +1,20 @@
 /*
 TEST_BUILD
-    $C{COMPILE} $DIR/future0.m -o future0.dylib -dynamiclib
-    $C{COMPILE} $DIR/future2.m -x none future0.dylib -o future2.dylib -dynamiclib
+    $C{COMPILE} $DIR/future0.m -install_name $T{DYLIBDIR}/future0.dylib -o future0.dylib -dynamiclib
+    $C{COMPILE} $DIR/future2.m -x none future0.dylib -install_name $T{DYLIBDIR}/future2.dylib -o future2.dylib -dynamiclib -ld_classic
     $C{COMPILE} $DIR/future.m -x none future0.dylib -o future.exe
 END
+
+TEST_BUILD_OUTPUT
+ld: warning: -ld_classic is deprecated and will be removed in a future release
+END
 */
+
+// NOTE: ld-prime now eliminates classrefs, which breaks future classes
+// somewhat. We don't plan to fix this for now, but we do want to keep older
+// binaries working. We build future2.dylib with -ld_classic to force it to
+// still use classrefs, which allows this test to verify that future classes
+// still work in that case.
 
 #include "test.h"
 
@@ -44,7 +54,6 @@ int main()
 {
     Class oldTestRoot;
     Class oldSub1;
-    Class newSub1;
 
     // objc_getFutureClass with existing class
     oldTestRoot = objc_getFutureClass("TestRoot");
@@ -63,11 +72,12 @@ int main()
     // objc_getFutureClass a second time
     testassert(oldSub1 == objc_getFutureClass("Sub1"));
 
+#if !TARGET_OS_EXCLAVEKIT
     // Load class Sub1
     dlopen("future2.dylib", 0);
 
     // Verify use of future class
-    newSub1 = objc_getClass("Sub1");
+    Class newSub1 = objc_getClass("Sub1");
     testassert(oldSub1 == newSub1);
     testassert(newSub1 == [newSub1 classref]);
     testassert(newSub1 == class_getSuperclass(objc_getClass("SubSub1")));
@@ -75,6 +85,7 @@ int main()
 
     testassert(1 == [oldSub1 method]);
     testassert(1 == [newSub1 method]);
+#endif // !TARGET_OS_EXCLAVEKIT
 
     succeed(__FILE__);
 }

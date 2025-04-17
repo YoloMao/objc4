@@ -50,6 +50,8 @@
 	 objects are stored.
 **********************************************************************/
 
+#include <stdint.h>
+
 // structure version number. Only bump if ABI compatability is broken
 #define AUTORELEASEPOOL_VERSION 1
 
@@ -64,8 +66,6 @@
 #include <string.h>
 #include <assert.h>
 #include <objc/objc.h>
-#include <pthread.h>
-
 
 #ifndef C_ASSERT
 	#if __has_feature(cxx_static_assert)
@@ -77,9 +77,18 @@
 	#endif
 #endif
 
-// Make ASSERT work when objc-private.h hasn't been included.
-#ifndef ASSERT
-#define ASSERT(x) assert(x)
+// Make OBJC_ASSERT work when objc-private.h hasn't been included.
+// Note: we avoid defining our own ASSERT because this header gets included by
+// clients, and that macro name is too generic.
+#ifdef ASSERT
+#define OBJC_ASSERT(x) ASSERT(x)
+#else
+#define OBJC_ASSERT(x) assert(x)
+#endif
+
+// Make objc_thread_t work when objc-os.h hasn't been included.
+#if !OBJC_THREAD_T_DEFINED
+typedef struct objc_thread *objc_thread_t;
 #endif
 
 struct magic_t {
@@ -89,8 +98,8 @@ struct magic_t {
 	uint32_t m[4];
 
 	magic_t() {
-		ASSERT(M1_len == strlen(M1));
-		ASSERT(M1_len == 3 * sizeof(m[1]));
+		OBJC_ASSERT(M1_len == strlen(M1));
+		OBJC_ASSERT(M1_len == 3 * sizeof(m[1]));
 
 		m[0] = M0;
 		strncpy((char *)&m[1], M1, M1_len);
@@ -124,46 +133,43 @@ class AutoreleasePoolPage;
 struct AutoreleasePoolPageData
 {
 #if SUPPORT_AUTORELEASEPOOL_DEDUP_PTRS
-    struct AutoreleasePoolEntry {
-        uintptr_t ptr: 48;
-        uintptr_t count: 16;
+    #define MASK(N) (((uintptr_t)1 << (N)) - 1)
 
-        static const uintptr_t maxCount = 65535; // 2^16 - 1
+    struct AutoreleasePoolEntry {
+        static constexpr uintptr_t pointerBits = 48;
+        static constexpr uintptr_t countBits = 16;
+
+        static constexpr uintptr_t pointerMask = MASK(pointerBits);
+        static constexpr uintptr_t maxCount = MASK(countBits);
+
+        uintptr_t ptr: pointerBits;
+        uintptr_t count: countBits;
+
+        ALWAYS_INLINE uintptr_t getPointer() const { return ptr; }
+        ALWAYS_INLINE uintptr_t getCount() const { return count; }
+        ALWAYS_INLINE void incrementCount() { count++; }
     };
-    static_assert((AutoreleasePoolEntry){ .ptr = MACH_VM_MAX_ADDRESS }.ptr == MACH_VM_MAX_ADDRESS, "MACH_VM_MAX_ADDRESS doesn't fit into AutoreleasePoolEntry::ptr!");
+    static_assert(sizeof(AutoreleasePoolEntry) == sizeof(uintptr_t), "sizeof(AutoreleasePoolEntry) != sizeof(uintptr_t)");
+    static_assert((OBJC_VM_MAX_ADDRESS & AutoreleasePoolEntry::pointerMask) == OBJC_VM_MAX_ADDRESS, "OBJC_VM_MAX_ADDRESS doesn't fit into AutoreleasePoolEntry::ptr!");
+
+    #undef MASK
 #endif
 
 	magic_t const magic;
 	__unsafe_unretained id *next;
-	pthread_t const thread;
+	objc_thread_t const thread;
 	AutoreleasePoolPage * const parent;
 	AutoreleasePoolPage *child;
 	uint32_t const depth;
 	uint32_t hiwat;
 
-	AutoreleasePoolPageData(__unsafe_unretained id* _next, pthread_t _thread, AutoreleasePoolPage* _parent, uint32_t _depth, uint32_t _hiwat)
+	AutoreleasePoolPageData(__unsafe_unretained id* _next, objc_thread_t _thread, AutoreleasePoolPage* _parent, uint32_t _depth, uint32_t _hiwat)
 		: magic(), next(_next), thread(_thread),
 		  parent(_parent), child(nil),
 		  depth(_depth), hiwat(_hiwat)
 	{
 	}
 };
-
-
-struct thread_data_t
-{
-#ifdef __LP64__
-	pthread_t const thread;
-	uint32_t const hiwat;
-	uint32_t const depth;
-#else
-	pthread_t const thread;
-	uint32_t const hiwat;
-	uint32_t const depth;
-	uint32_t padding;
-#endif
-};
-C_ASSERT(sizeof(thread_data_t) == 16);
 
 #undef C_ASSERT
 

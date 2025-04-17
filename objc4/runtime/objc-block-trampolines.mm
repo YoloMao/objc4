@@ -32,8 +32,11 @@
 #include "objc-private.h"
 #include "runtime.h"
 
+#if !TARGET_OS_EXCLAVEKIT
+
 #include <Block.h>
 #include <Block_private.h>
+#include <inttypes.h>
 #include <mach/mach.h>
 #include <objc/objc-block-trampolines.h>
 
@@ -108,8 +111,8 @@ class TrampolinePointerWrapper {
 # endif
 #endif
 
-        uintptr_t textSegment;
-        uintptr_t textSegmentSize;
+        uintptr_t ptrauth_trampoline_textSegment textSegment;
+        uintptr_t ptrauth_trampoline_textSegment textSegmentSize;
 
         void check() {
 #if DEBUG
@@ -226,8 +229,8 @@ typedef enum {
 
 struct TrampolineBlockPageGroup
 {
-    TrampolineBlockPageGroup *nextPageGroup; // linked list of all pages
-    TrampolineBlockPageGroup *nextAvailablePage; // linked list of pages with available slots
+    TrampolineBlockPageGroup * ptrauth_trampoline_block_page_group nextPageGroup; // linked list of all pages
+    TrampolineBlockPageGroup * ptrauth_trampoline_block_page_group nextAvailablePage; // linked list of pages with available slots
 
     uintptr_t nextAvailable; // index of next available slot, endIndex() if no more available
 
@@ -295,12 +298,13 @@ struct TrampolineBlockPageGroup
     }
     
     IMP trampoline(int aMode, uintptr_t index) {
-        ASSERT(validIndex(index));
         char *base = (char *)trampolinesForMode(aMode);
         char *imp = base + index*slotSize();
 #if __arm__
         imp++;  // trampoline is Thumb instructions
 #endif
+        if (!validIndex(index))
+            _objc_fatal("Trampoline block %p, requested invalid index %" PRIuPTR, this, index);
 #if __has_feature(ptrauth_calls)
         imp = ptrauth_sign_unauthenticated(imp,
                                            ptrauth_key_function_pointer, 0);
@@ -327,18 +331,14 @@ struct TrampolineBlockPageGroup
 
 };
 
-static TrampolineBlockPageGroup *HeadPageGroup;
+static TrampolineBlockPageGroup * ptrauth_trampoline_block_page_group HeadPageGroup;
 
 #pragma mark Utility Functions
-
-#if !__OBJC2__
-#define runtimeLock classLock
-#endif
 
 #pragma mark Trampoline Management Functions
 static TrampolineBlockPageGroup *_allocateTrampolinesAndData()
 {
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 
     vm_address_t dataAddress;
     
@@ -405,8 +405,8 @@ static TrampolineBlockPageGroup *_allocateTrampolinesAndData()
 static TrampolineBlockPageGroup *
 getOrAllocatePageGroupWithNextAvailable() 
 {
-    runtimeLock.assertLocked();
-    
+    lockdebug::assert_locked(&runtimeLock.get());
+
     if (!HeadPageGroup)
         return _allocateTrampolinesAndData();
     
@@ -423,7 +423,7 @@ getOrAllocatePageGroupWithNextAvailable()
 static TrampolineBlockPageGroup *
 pageAndIndexContainingIMP(IMP anImp, uintptr_t *outIndex) 
 {
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 
     // Authenticate as a function pointer, returning an un-signed address.
     uintptr_t trampAddress =
@@ -490,7 +490,7 @@ _imp_implementationWithBlock_init(void)
 IMP 
 _imp_implementationWithBlockNoCopy(id block)
 {
-    runtimeLock.assertLocked();
+    lockdebug::assert_locked(&runtimeLock.get());
 
     TrampolineBlockPageGroup *pageGroup = 
         getOrAllocatePageGroupWithNextAvailable();
@@ -611,3 +611,5 @@ BOOL imp_removeBlock(IMP anImp) {
     Block_release(block);
     return YES;
 }
+
+#endif // !TARGET_OS_EXCLAVEKIT

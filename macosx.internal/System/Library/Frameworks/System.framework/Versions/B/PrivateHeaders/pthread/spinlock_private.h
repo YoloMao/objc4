@@ -49,31 +49,32 @@
  * POSIX Threads - IEEE 1003.1c
  */
 
-#ifndef _POSIX_PTHREAD_SPINLOCK_H
-#define _POSIX_PTHREAD_SPINLOCK_H
-
-#include <sys/cdefs.h>
-#include <mach/mach.h>
-#include <libkern/OSAtomic.h>
-
-typedef volatile OSSpinLock pthread_lock_t __deprecated_msg("Use <os/lock.h> instead");
-
-#define LOCK_INIT(l) ((l) = OS_SPINLOCK_INIT)
-#define LOCK_INITIALIZER OS_SPINLOCK_INIT
-
-#define _DO_SPINLOCK_LOCK(v) OSSpinLockLock(v)
-#define _DO_SPINLOCK_UNLOCK(v) OSSpinLockUnlock(v)
-
-#define TRY_LOCK(v) OSSpinLockTry((volatile OSSpinLock *)&(v))
-#define LOCK(v) OSSpinLockLock((volatile OSSpinLock *)&(v))
-#define UNLOCK(v) OSSpinLockUnlock((volatile OSSpinLock *)&(v))
-
-extern void _spin_lock(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
-extern int _spin_lock_try(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
-extern void _spin_unlock(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
-
-extern void spin_lock(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
-extern int spin_lock_try(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
-extern void spin_unlock(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
-
-#endif /* _POSIX_PTHREAD_SPINLOCK_H */
+ #ifndef _POSIX_PTHREAD_SPINLOCK_H
+ #define _POSIX_PTHREAD_SPINLOCK_H
+ 
+ #include <sys/cdefs.h>
+ #include <mach/mach.h>
+ #include <libkern/OSAtomic.h>
+ 
+ typedef volatile OSSpinLock pthread_lock_t __deprecated_msg("Use <os/lock.h> instead");
+ 
+ #define LOCK_INIT(l) ((l) = OS_SPINLOCK_INIT)
+ #define LOCK_INITIALIZER OS_SPINLOCK_INIT
+ 
+ #define _DO_SPINLOCK_LOCK(v) OSSpinLockLock(v)
+ #define _DO_SPINLOCK_UNLOCK(v) OSSpinLockUnlock(v)
+ 
+ #define TRY_LOCK(v) OSSpinLockTry((volatile OSSpinLock *)&(v))
+ #define LOCK(v) OSSpinLockLock((volatile OSSpinLock *)&(v))
+ #define UNLOCK(v) OSSpinLockUnlock((volatile OSSpinLock *)&(v))
+ 
+ extern void _spin_lock(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
+ extern int _spin_lock_try(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
+ extern void _spin_unlock(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
+ 
+ extern void spin_lock(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
+ extern int spin_lock_try(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
+ extern void spin_unlock(pthread_lock_t *lockp) __deprecated_msg("Use <os/lock.h> instead");
+ 
+ #endif /* _POSIX_PTHREAD_SPINLOCK_H */
+ 

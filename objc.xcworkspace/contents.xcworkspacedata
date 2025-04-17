@@ -102,6 +102,12 @@
                   location = "group:linker_set.h">
                </FileRef>
                <FileRef
+                  location = "group:log_simple_private.h">
+               </FileRef>
+               <FileRef
+                  location = "group:log_simple_private_impl.h">
+               </FileRef>
+               <FileRef
                   location = "group:lock_private.h">
                </FileRef>
                <FileRef
