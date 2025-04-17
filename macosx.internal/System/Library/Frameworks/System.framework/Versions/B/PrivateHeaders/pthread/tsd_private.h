@@ -49,7 +49,7 @@
  
  #ifndef __ASSEMBLER__
  
- #include <machine/cpu_capabilities.h>
+ #include <system/machine/cpu_capabilities.h>
  #include <sys/cdefs.h>
  #include <TargetConditionals.h>
  #include <Availability.h>
